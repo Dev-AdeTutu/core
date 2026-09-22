@@ -16,32 +16,34 @@ export interface NftMetadata {
   /** NFT asset identifier (token ID or contract-based ID) */
   assetId: string;
   /** Metadata name */
-  name?: string;
+  name?: string | undefined;
   /** Metadata description */
-  description?: string;
+  description?: string | undefined;
   /** URI to the NFT image/media */
-  image?: string;
+  image?: string | undefined;
   /** Proxied image URL if media proxying is enabled */
-  proxyImage?: string;
+  proxyImage?: string | undefined;
   /** External metadata URI that was fetched */
-  metadataUri?: string;
+  metadataUri?: string | undefined;
   /** Raw metadata attributes */
-  attributes?: Array<{ trait_type: string; value: string | number }>;
+  attributes?:
+    | Array<{ trait_type: string; value: string | number }>
+    | undefined;
   /** Timestamp when metadata was fetched */
   fetchedAt: number;
 }
 
 export interface NftMetadataOptions {
   /** Custom cache instance (uses built-in LRU cache if omitted) */
-  cache?: SorokitCache;
+  cache?: SorokitCache | undefined;
   /** TTL for cached metadata in milliseconds (default: 5 minutes) */
-  ttlMs?: number;
+  ttlMs?: number | undefined;
   /** Base URL for media proxy (enables media proxying when set) */
-  mediaProxyUrl?: string;
+  mediaProxyUrl?: string | undefined;
   /** Custom fetch function (defaults to globalThis.fetch) */
-  fetchFn?: typeof fetch;
+  fetchFn?: typeof fetch | undefined;
   /** Request timeout in milliseconds (default: 10000) */
-  timeoutMs?: number;
+  timeoutMs?: number | undefined;
 }
 
 /** Default cache capacity for LRU eviction */
@@ -197,12 +199,16 @@ export async function getNftMetadata(
     const metadata: NftMetadata = {
       assetId,
       name: typeof data.name === "string" ? data.name : undefined,
-      description: typeof data.description === "string" ? data.description : undefined,
+      description:
+        typeof data.description === "string" ? data.description : undefined,
       image: typeof data.image === "string" ? data.image : undefined,
       proxyImage,
       metadataUri: uri,
       attributes: Array.isArray(data.attributes)
-        ? (data.attributes as Array<{ trait_type: string; value: string | number }>)
+        ? (data.attributes as Array<{
+            trait_type: string;
+            value: string | number;
+          }>)
         : undefined,
       fetchedAt: Date.now(),
     };

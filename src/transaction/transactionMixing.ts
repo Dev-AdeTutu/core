@@ -148,7 +148,7 @@ export class TransactionMixingPool {
   private participants: Map<string, PoolParticipant> = new Map();
   private config: Required<MixingPoolConfig>;
   private batchCounter: number = 0;
-  private cleanupScheduleId?: NodeJS.Timeout;
+  private cleanupScheduleId?: NodeJS.Timeout | undefined;
 
   /**
    * Create a new mixing pool.
@@ -180,28 +180,34 @@ export class TransactionMixingPool {
     try {
       // Check for duplicates
       if (this.transactions.has(id)) {
-        return err({
-          code: SorokitErrorCode.INVALID_CONFIG,
-          message: "Transaction with this ID already exists in pool",
-          category: SorokitErrorCategory.VALIDATION,
-          context: {
-            operation: "addTransaction",
-            parameters: { id },
+        return err(
+          SorokitErrorCode.INVALID_CONFIG,
+          "Transaction with this ID already exists in pool",
+          undefined,
+          undefined,
+          {
+            context: {
+              operation: "addTransaction",
+              parameters: { id },
+            },
           },
-        });
+        );
       }
 
       // Validate inputs
       if (!participantId || !envelopeXdr || !recipient || !amount) {
-        return err({
-          code: SorokitErrorCode.VALIDATION,
-          message: "Missing required transaction parameters",
-          category: SorokitErrorCategory.VALIDATION,
-          context: {
-            operation: "addTransaction",
-            parameters: { id },
+        return err(
+          SorokitErrorCode.VALIDATION,
+          "Missing required transaction parameters",
+          undefined,
+          undefined,
+          {
+            context: {
+              operation: "addTransaction",
+              parameters: { id },
+            },
           },
-        });
+        );
       }
 
       const now = Date.now();
@@ -237,12 +243,18 @@ export class TransactionMixingPool {
 
       return ok(transaction);
     } catch (error) {
-      return err({
-        code: SorokitErrorCode.INTERNAL,
-        message: "Failed to add transaction to pool",
-        category: SorokitErrorCategory.INTERNAL,
-        cause: error,
-      });
+      return err(
+        SorokitErrorCode.INTERNAL,
+        "Failed to add transaction to pool",
+        error,
+        undefined,
+        {
+          context: {
+            operation: "addTransaction",
+            parameters: { id },
+          },
+        },
+      );
     }
   }
 
@@ -266,10 +278,7 @@ export class TransactionMixingPool {
       }
 
       // Take up to maxBatchSize transactions
-      const batchSize = Math.min(
-        pending.length,
-        this.config.maxBatchSize,
-      );
+      const batchSize = Math.min(pending.length, this.config.maxBatchSize);
       const batch = pending.slice(0, batchSize);
 
       // Shuffle the batch for privacy
@@ -283,12 +292,17 @@ export class TransactionMixingPool {
 
       return ok(batch);
     } catch (error) {
-      return err({
-        code: SorokitErrorCode.INTERNAL,
-        message: "Failed to get next batch from pool",
-        category: SorokitErrorCategory.INTERNAL,
-        cause: error,
-      });
+      return err(
+        SorokitErrorCode.INTERNAL,
+        "Failed to get next batch from pool",
+        error,
+        undefined,
+        {
+          context: {
+            operation: "getNextBatch",
+          },
+        },
+      );
     }
   }
 
@@ -313,11 +327,17 @@ export class TransactionMixingPool {
       for (const txId of transactionIds) {
         const tx = this.transactions.get(txId);
         if (!tx) {
-          return err({
-            code: SorokitErrorCode.TX_NOT_FOUND,
-            message: `Transaction ${txId} not found in pool`,
-            category: SorokitErrorCategory.TRANSACTION,
-          });
+          return err(
+            SorokitErrorCode.TX_NOT_FOUND,
+            `Transaction ${txId} not found in pool`,
+            undefined,
+            undefined,
+            {
+              context: {
+                operation: "markBatchSubmitted",
+              },
+            },
+          );
         }
 
         tx.state = "submitted";
@@ -328,7 +348,9 @@ export class TransactionMixingPool {
       }
 
       // Calculate estimated cost (simplified: 1000 stroops per transaction)
-      const estimatedCost = (BigInt(transactionIds.length) * BigInt(1000)).toString();
+      const estimatedCost = (
+        BigInt(transactionIds.length) * BigInt(1000)
+      ).toString();
 
       // Calculate cost savings (rough estimate)
       const individualCost = BigInt(transactionIds.length) * BigInt(1000);
@@ -349,12 +371,17 @@ export class TransactionMixingPool {
 
       return ok(result);
     } catch (error) {
-      return err({
-        code: SorokitErrorCode.INTERNAL,
-        message: "Failed to mark batch as submitted",
-        category: SorokitErrorCategory.INTERNAL,
-        cause: error,
-      });
+      return err(
+        SorokitErrorCode.INTERNAL,
+        "Failed to mark batch as submitted",
+        error,
+        undefined,
+        {
+          context: {
+            operation: "markBatchSubmitted",
+          },
+        },
+      );
     }
   }
 
@@ -382,12 +409,17 @@ export class TransactionMixingPool {
 
       return ok(undefined);
     } catch (error) {
-      return err({
-        code: SorokitErrorCode.INTERNAL,
-        message: "Failed to mark batch as failed",
-        category: SorokitErrorCategory.INTERNAL,
-        cause: error,
-      });
+      return err(
+        SorokitErrorCode.INTERNAL,
+        "Failed to mark batch as failed",
+        error,
+        undefined,
+        {
+          context: {
+            operation: "markBatchFailed",
+          },
+        },
+      );
     }
   }
 
@@ -439,12 +471,17 @@ export class TransactionMixingPool {
         findings,
       });
     } catch (error) {
-      return err({
-        code: SorokitErrorCode.INTERNAL,
-        message: "Failed to analyze pool privacy",
-        category: SorokitErrorCategory.INTERNAL,
-        cause: error,
-      });
+      return err(
+        SorokitErrorCode.INTERNAL,
+        "Failed to analyze pool privacy",
+        error,
+        undefined,
+        {
+          context: {
+            operation: "analyzePrivacy",
+          },
+        },
+      );
     }
   }
 
@@ -468,12 +505,17 @@ export class TransactionMixingPool {
 
       return ok(undefined);
     } catch (error) {
-      return err({
-        code: SorokitErrorCode.INTERNAL,
-        message: "Failed to remove participant",
-        category: SorokitErrorCategory.INTERNAL,
-        cause: error,
-      });
+      return err(
+        SorokitErrorCode.INTERNAL,
+        "Failed to remove participant",
+        error,
+        undefined,
+        {
+          context: {
+            operation: "removeParticipant",
+          },
+        },
+      );
     }
   }
 
@@ -545,7 +587,9 @@ export class TransactionMixingPool {
     for (let i = 0; i < this.config.shuffleIterations; i++) {
       for (let j = batch.length - 1; j > 0; j--) {
         const k = Math.floor(Math.random() * (j + 1));
-        [batch[j], batch[k]] = [batch[k], batch[j]];
+        const temp = batch[j]!;
+        batch[j] = batch[k]!;
+        batch[k] = temp;
       }
     }
   }

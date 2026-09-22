@@ -23,12 +23,7 @@ export type TransactionCategory =
 /**
  * Compliance framework type.
  */
-export type ComplianceFramework =
-  | "aml"
-  | "kyc"
-  | "basic"
-  | "sox"
-  | "custom";
+export type ComplianceFramework = "aml" | "kyc" | "basic" | "sox" | "custom";
 
 /**
  * Normalized activity record.
@@ -255,39 +250,51 @@ export async function generateComplianceReport(
   try {
     // Validate account format
     if (!account || typeof account !== "string" || !account.startsWith("G")) {
-      return err({
-        code: SorokitErrorCode.INVALID_ADDRESS,
-        message: "Invalid account address",
-        category: SorokitErrorCategory.VALIDATION,
-        context: {
-          operation: "generateComplianceReport",
-          parameters: { account },
+      return err(
+        SorokitErrorCode.INVALID_ADDRESS,
+        "Invalid account address",
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "generateComplianceReport",
+            parameters: { account },
+          },
         },
-      });
+      );
     }
 
     // Set date range
     const now = Date.now();
     const periodEndMs = options?.periodEndMs ?? now;
-    const periodStartMs = options?.periodStartMs ?? now - 30 * 24 * 60 * 60 * 1000; // 30 days
+    const periodStartMs =
+      options?.periodStartMs ?? now - 30 * 24 * 60 * 60 * 1000; // 30 days
 
     if (periodStartMs >= periodEndMs) {
-      return err({
-        code: SorokitErrorCode.INVALID_CONFIG,
-        message: "Period start must be before period end",
-        category: SorokitErrorCategory.VALIDATION,
-        context: {
-          operation: "generateComplianceReport",
-          parameters: { periodStartMs, periodEndMs },
+      return err(
+        SorokitErrorCode.INVALID_CONFIG,
+        "Period start must be before period end",
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "generateComplianceReport",
+            parameters: { periodStartMs, periodEndMs },
+          },
         },
-      });
+      );
     }
 
     // Normalize activities
-    const normalizedActivities = normalizeActivities(activities, periodStartMs, periodEndMs);
+    const normalizedActivities = normalizeActivities(
+      activities,
+      periodStartMs,
+      periodEndMs,
+    );
 
     // Get framework rules
-    const frameworkRuleSet = FRAMEWORK_RULES[framework] || FRAMEWORK_RULES.basic;
+    const frameworkRuleSet =
+      FRAMEWORK_RULES[framework] || FRAMEWORK_RULES.basic;
     const allRules = [
       ...frameworkRuleSet.rules,
       ...(options?.customRules || []),
@@ -329,16 +336,18 @@ export async function generateComplianceReport(
 
     return ok(report);
   } catch (error) {
-    return err({
-      code: SorokitErrorCode.INTERNAL,
-      message: "Failed to generate compliance report",
-      category: SorokitErrorCategory.INTERNAL,
-      cause: error,
-      context: {
-        operation: "generateComplianceReport",
-        parameters: { account, framework },
+    return err(
+      SorokitErrorCode.INTERNAL,
+      "Failed to generate compliance report",
+      error,
+      undefined,
+      {
+        context: {
+          operation: "generateComplianceReport",
+          parameters: { account, framework },
+        },
       },
-    });
+    );
   }
 }
 
@@ -449,19 +458,12 @@ function calculateComplianceSummary(
   ).length;
 
   // Simple compliance score calculation
-  const pendingCount = activities.filter(
-    (a) => a.status === "pending",
-  ).length;
-  const incompleteCount = activities.filter(
-    (a) => !a.dataComplete,
-  ).length;
+  const pendingCount = activities.filter((a) => a.status === "pending").length;
+  const incompleteCount = activities.filter((a) => !a.dataComplete).length;
 
   const score = Math.max(
     0,
-    100 -
-      highRiskCount * 10 -
-      pendingCount * 5 -
-      incompleteCount * 2,
+    100 - highRiskCount * 10 - pendingCount * 5 - incompleteCount * 2,
   );
 
   let assessment: "compliant" | "review-required" | "non-compliant" =
@@ -499,7 +501,9 @@ export function exportComplianceReport(
       // Convert Map to object for JSON serialization
       const reportObj = {
         ...report,
-        transactionsByCategory: Object.fromEntries(report.transactionsByCategory),
+        transactionsByCategory: Object.fromEntries(
+          report.transactionsByCategory,
+        ),
       };
       return ok(JSON.stringify(reportObj, null, 2));
     } else if (format === "csv") {
@@ -531,17 +535,12 @@ export function exportComplianceReport(
       return ok(csv);
     }
 
-    return err({
-      code: SorokitErrorCode.INVALID_CONFIG,
-      message: "Unsupported export format",
-      category: SorokitErrorCategory.VALIDATION,
-    });
+    return err(SorokitErrorCode.INVALID_CONFIG, "Unsupported export format");
   } catch (error) {
-    return err({
-      code: SorokitErrorCode.INTERNAL,
-      message: "Failed to export compliance report",
-      category: SorokitErrorCategory.INTERNAL,
-      cause: error,
-    });
+    return err(
+      SorokitErrorCode.INTERNAL,
+      "Failed to export compliance report",
+      error,
+    );
   }
 }

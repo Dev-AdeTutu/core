@@ -24,7 +24,9 @@ import type { AuthenticationCapabilities } from "./types";
  *   // Fallback to PIN authentication
  * }
  */
-export async function detectAuthenticationCapabilities(): Promise<SorokitResult<AuthenticationCapabilities>> {
+export async function detectAuthenticationCapabilities(): Promise<
+  SorokitResult<AuthenticationCapabilities>
+> {
   const capabilities: AuthenticationCapabilities = {
     webauthn: false,
     pin: true, // PIN is always available as fallback
@@ -36,7 +38,7 @@ export async function detectAuthenticationCapabilities(): Promise<SorokitResult<
   }
 
   // Check for WebAuthn API support
-  const hasWebAuthn = 
+  const hasWebAuthn =
     typeof window.PublicKeyCredential !== "undefined" &&
     typeof navigator.credentials !== "undefined";
 
@@ -55,8 +57,12 @@ export async function detectAuthenticationCapabilities(): Promise<SorokitResult<
     };
 
     // Check for platform authenticator (Touch ID, Windows Hello, etc.)
-    if (typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function") {
-      const platformAvailable = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    if (
+      typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable ===
+      "function"
+    ) {
+      const platformAvailable =
+        await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
       webauthnDetails.platformAuthenticator = platformAvailable;
     }
 
@@ -87,14 +93,14 @@ export async function detectAuthenticationCapabilities(): Promise<SorokitResult<
  * }
  */
 export async function isAuthenticationMethodAvailable(
-  method: "WEBAUTHN" | "PIN"
+  method: "WEBAUTHN" | "PIN",
 ): Promise<boolean> {
   const capabilities = await detectAuthenticationCapabilities();
-  
+
   if (method === "WEBAUTHN") {
-    return capabilities.data.webauthn;
+    return capabilities.data?.webauthn ?? false;
   }
-  
+
   // PIN is always available
   return true;
 }

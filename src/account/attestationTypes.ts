@@ -16,9 +16,9 @@ export interface CredentialMetadata {
   /** ISO 8601 timestamp when credential was issued */
   issuedDate: string;
   /** ISO 8601 timestamp when credential expires (optional) */
-  expirationDate?: string;
+  expirationDate?: string | undefined;
   /** Custom attributes associated with the credential */
-  attributes?: Record<string, unknown>;
+  attributes?: Record<string, unknown> | undefined;
 }
 
 /**
@@ -87,7 +87,7 @@ export interface RevocationEntry {
   /** Credential ID */
   credentialId: string;
   /** Reason for revocation */
-  reason?: string;
+  reason?: string | undefined;
   /** Timestamp when revocation was recorded */
   revokedAt: string;
 }

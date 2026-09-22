@@ -32,28 +32,28 @@ export interface BundleStep {
   /** Unique step identifier */
   id: string;
   /** Human-readable description */
-  description?: string;
+  description?: string | undefined;
   /** Transaction XDR for this step (or undefined if deferred) */
-  transactionXdr?: string;
+  transactionXdr?: string | undefined;
   /** Step IDs that must complete before this step runs */
-  dependencies?: string[];
+  dependencies?: string[] | undefined;
   /** Predicate evaluated before execution — returning false skips this step */
-  condition?: () => boolean;
+  condition?: (() => boolean) | undefined;
   /** Recovery action if this step fails */
-  recovery?: () => Promise<SorokitResult<void>>;
+  recovery?: (() => Promise<SorokitResult<void>>) | undefined;
   /** Current status */
   status: BundleStepStatus;
   /** Error message if step failed */
-  error?: string;
+  error?: string | undefined;
   /** Transaction hash if step was submitted on-chain */
-  txHash?: string;
+  txHash?: string | undefined;
 }
 
 export interface TransactionBundle {
   /** Unique bundle identifier */
   id: string;
   /** Bundle name for display */
-  name?: string;
+  name?: string | undefined;
   /** Ordered steps in this bundle */
   steps: BundleStep[];
   /** Current bundle status */
@@ -66,9 +66,9 @@ export interface TransactionBundle {
 
 export interface CreateBundleOptions {
   /** Optional bundle identifier (auto-generated if omitted) */
-  id?: string;
+  id?: string | undefined;
   /** Bundle display name */
-  name?: string;
+  name?: string | undefined;
 }
 
 /**
@@ -233,11 +233,18 @@ export function updateStepStatus(
 /**
  * Recalculate the bundle status from its steps.
  */
-export function recalculateBundleStatus(bundle: TransactionBundle): BundleStatus {
+export function recalculateBundleStatus(
+  bundle: TransactionBundle,
+): BundleStatus {
   const statuses = bundle.steps.map((s) => s.status);
 
-  if (statuses.every((s) => s === "completed" || s === "skipped")) return "completed";
-  if (statuses.some((s) => s === "failed") && statuses.some((s) => s === "completed")) return "partial_failure";
+  if (statuses.every((s) => s === "completed" || s === "skipped"))
+    return "completed";
+  if (
+    statuses.some((s) => s === "failed") &&
+    statuses.some((s) => s === "completed")
+  )
+    return "partial_failure";
   if (statuses.every((s) => s === "failed")) return "failed";
   if (statuses.some((s) => s === "recovery")) return "recovery";
   if (statuses.some((s) => s === "running")) return "running";
@@ -251,7 +258,9 @@ export function recalculateBundleStatus(bundle: TransactionBundle): BundleStatus
 export async function recoverBundle(
   bundle: TransactionBundle,
 ): Promise<SorokitResult<TransactionBundle>> {
-  const failedSteps = bundle.steps.filter((s) => s.status === "failed" && s.recovery);
+  const failedSteps = bundle.steps.filter(
+    (s) => s.status === "failed" && s.recovery,
+  );
 
   for (const step of failedSteps) {
     updateStepStatus(bundle, step.id, "recovery");
@@ -260,7 +269,9 @@ export async function recoverBundle(
       if (result.status === "ok") {
         updateStepStatus(bundle, step.id, "pending");
       } else {
-        updateStepStatus(bundle, step.id, "failed", { error: result.error.message });
+        updateStepStatus(bundle, step.id, "failed", {
+          error: result.error.message,
+        });
       }
     } catch (cause) {
       updateStepStatus(bundle, step.id, "failed", {

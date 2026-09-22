@@ -21,13 +21,13 @@ export interface ConsensusParticipant {
   /** Unique identifier for the participant */
   participantId: string;
   /** Display name or description */
-  name?: string;
+  name?: string | undefined;
   /** Whether participant has approved */
   approved: boolean;
   /** Whether participant has rejected */
   rejected: boolean;
   /** Timestamp of approval/rejection (if applicable) */
-  respondedAt?: string;
+  respondedAt?: string | undefined;
 }
 
 /**
@@ -39,7 +39,7 @@ export interface ApprovalDecision {
   /** Decision: true for approval, false for rejection */
   decision: boolean;
   /** Optional reason for decision */
-  reason?: string;
+  reason?: string | undefined;
   /** Timestamp of decision */
   timestamp: string;
 }
@@ -77,11 +77,11 @@ export interface ConsensusTransaction {
   /** Timestamp when consensus was created */
   createdAt: string;
   /** Timestamp when consensus was finalized (if applicable) */
-  finalizedAt?: string;
+  finalizedAt?: string | undefined;
   /** Optional linked transaction ID */
-  transactionId?: string;
+  transactionId?: string | undefined;
   /** Optional metadata */
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 /**
@@ -104,7 +104,7 @@ export interface ConsensusSummary {
  */
 export interface CreateConsensusOptions {
   /** Optional transaction ID to link */
-  transactionId?: string;
+  transactionId?: string | undefined;
   /** Optional metadata */
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }

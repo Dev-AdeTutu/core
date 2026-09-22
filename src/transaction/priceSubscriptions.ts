@@ -71,10 +71,17 @@ export class WebSocketPriceProvider implements PriceSubscriptionProvider {
       };
       ws.onmessage = (event) => {
         try {
-          const raw = JSON.parse(event.data as string) as Record<string, unknown>;
+          const raw = JSON.parse(event.data as string) as Record<
+            string,
+            unknown
+          >;
           const price = Number(raw.price);
           if (!Number.isFinite(price) || price <= 0) {
-            this.errorHandler?.(new Error(`Invalid price value received from provider "${this.name}"`));
+            this.errorHandler?.(
+              new Error(
+                `Invalid price value received from provider "${this.name}"`,
+              ),
+            );
             return;
           }
           const update: PriceUpdate = {
@@ -87,7 +94,9 @@ export class WebSocketPriceProvider implements PriceSubscriptionProvider {
           };
           this.messageHandler?.(update);
         } catch {
-          this.errorHandler?.(new Error(`Failed to parse message from provider "${this.name}"`));
+          this.errorHandler?.(
+            new Error(`Failed to parse message from provider "${this.name}"`),
+          );
         }
       };
     });
@@ -162,13 +171,19 @@ export function subscribePrices(
       retryCount = 0;
 
       if (providers.length === 0) {
-        options?.onError?.(new Error("subscribePrices: no providers configured and retry limit reached."));
+        options?.onError?.(
+          new Error(
+            "subscribePrices: no providers configured and retry limit reached.",
+          ),
+        );
         return;
       }
 
       const allExhausted = providerIndex === 0;
       if (allExhausted && providers.length <= 1) {
-        options?.onError?.(new Error("subscribePrices: all providers exhausted."));
+        options?.onError?.(
+          new Error("subscribePrices: all providers exhausted."),
+        );
         return;
       }
     }
@@ -183,11 +198,17 @@ export function subscribePrices(
   async function attemptConnect(): Promise<void> {
     if (unsubscribed) return;
     if (providers.length === 0) {
-      options?.onError?.(new Error("subscribePrices: no providers configured."));
+      options?.onError?.(
+        new Error("subscribePrices: no providers configured."),
+      );
       return;
     }
 
     const provider = providers[providerIndex];
+    if (!provider) {
+      options?.onError?.(new Error("subscribePrices: provider is undefined."));
+      return;
+    }
     activeProvider = provider;
 
     provider.onMessage((update) => {
@@ -218,7 +239,9 @@ export function subscribePrices(
   }
 
   // Wire AbortSignal
-  options?.signal?.addEventListener("abort", () => unsubscribeHandle(), { once: true });
+  options?.signal?.addEventListener("abort", () => unsubscribeHandle(), {
+    once: true,
+  });
 
   // Start
   void attemptConnect();

@@ -6,7 +6,10 @@
  */
 
 import type { SorokitResult } from "../../shared/response";
-import type { ContractEvent, ContractEventFilter } from "../subscribeContractEvents";
+import type {
+  ContractEvent,
+  ContractEventFilter,
+} from "../subscribeContractEvents";
 
 /**
  * Normalized archived contract event record.
@@ -29,11 +32,11 @@ export interface ArchivedContractEvent {
   /** Event timestamp (ISO 8601 or Unix ms) */
   timestamp: string | number;
   /** Transaction hash that included this event */
-  transactionHash?: string;
+  transactionHash?: string | undefined;
   /** Source account that triggered the event */
-  emitter?: string;
+  emitter?: string | undefined;
   /** Additional metadata */
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 /**
@@ -123,9 +126,9 @@ export interface EventAggregation {
   /** Counts by event type */
   byType: EventTypeCount[];
   /** Time series buckets (if requested) */
-  timeSeries?: TimeSeriesBucket[];
+  timeSeries?: TimeSeriesBucket[] | undefined;
   /** Average events per time unit */
-  rate?: number;
+  rate?: number | undefined;
 }
 
 /**
@@ -158,7 +161,10 @@ export interface EventArchiveStorage {
    * @param intervalMs - Time series interval (optional)
    * @returns Aggregated statistics
    */
-  aggregate(query: EventArchiveQuery, intervalMs?: number): Promise<SorokitResult<EventAggregation>>;
+  aggregate(
+    query: EventArchiveQuery,
+    intervalMs?: number,
+  ): Promise<SorokitResult<EventAggregation>>;
 
   /**
    * Delete archived events matching the query.
@@ -193,11 +199,11 @@ export interface StorageStats {
   /** Number of unique contracts */
   uniqueContracts: number;
   /** Oldest event timestamp */
-  oldestTimestamp?: number;
+  oldestTimestamp?: number | undefined;
   /** Newest event timestamp */
-  newestTimestamp?: number;
+  newestTimestamp?: number | undefined;
   /** Storage size in bytes (if available) */
-  storageSizeBytes?: number;
+  storageSizeBytes?: number | undefined;
 }
 
 /**
@@ -207,11 +213,13 @@ export interface EventArchivalOptions {
   /** Storage adapter to use */
   storage: EventArchiveStorage;
   /** Batch size for archival operations */
-  batchSize?: number;
+  batchSize?: number | undefined;
   /** Whether to deduplicate events before storing */
-  deduplicate?: boolean;
+  deduplicate?: boolean | undefined;
   /** Error handler for storage failures */
-  onStorageError?: (error: Error, events: ArchivedContractEvent[]) => void;
+  onStorageError?:
+    | ((error: Error, events: ArchivedContractEvent[]) => void)
+    | undefined;
 }
 
 /**

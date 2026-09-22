@@ -116,7 +116,10 @@ export function checkThrottle(
   origin: string,
   config?: ThrottlingConfig,
 ): SorokitResult<ThrottleCheckResult> {
-  const fullConfig = { ...DEFAULT_THROTTLING_CONFIG, ...config };
+  const fullConfig = {
+    ...DEFAULT_THROTTLING_CONFIG,
+    ...config,
+  } as Required<ThrottlingConfig>;
 
   if (!fullConfig.enabled) {
     return ok({
@@ -172,24 +175,24 @@ export function checkThrottle(
 
   // Check rate limit window
   const now = Date.now();
-  const windowStart = now - fullConfig.timeWindowMs;
+  const windowStart = now - fullConfig.timeWindowMs!;
 
   // Clean up old attempts
   const recentAttempts = connectionHistory.filter(
     (a) => a.origin === normalized && a.timestamp > windowStart,
   );
 
-  if (recentAttempts.length >= fullConfig.maxAttemptsPerWindow) {
+  if (recentAttempts.length >= fullConfig.maxAttemptsPerWindow!) {
     // Block this origin temporarily
     state.blocked = true;
-    state.blockExpiresAt = now + fullConfig.blockDurationMs;
+    state.blockExpiresAt = now + fullConfig.blockDurationMs!;
     state.blockReason = "Too many connection attempts";
 
     return ok({
       allowed: false,
       reason: "Rate limit exceeded",
-      blockExpiresIn: fullConfig.blockDurationMs,
-      retryAfterMs: fullConfig.blockDurationMs,
+      blockExpiresIn: fullConfig.blockDurationMs!,
+      retryAfterMs: fullConfig.blockDurationMs!,
       state,
     });
   }
@@ -209,7 +212,10 @@ export function recordConnectionAttempt(
   failureReason?: string,
   config?: ThrottlingConfig,
 ): SorokitResult<OriginRateLimitState> {
-  const fullConfig = { ...DEFAULT_THROTTLING_CONFIG, ...config };
+  const fullConfig = {
+    ...DEFAULT_THROTTLING_CONFIG,
+    ...config,
+  } as Required<ThrottlingConfig>;
   const normalized = normalizeOrigin(origin);
 
   if (!normalized || typeof normalized !== "string") {
@@ -248,9 +254,9 @@ export function recordConnectionAttempt(
       state.authenticationFailures++;
 
       // Block after too many auth failures
-      if (state.authenticationFailures >= fullConfig.maxAuthFailures) {
+      if (state.authenticationFailures >= fullConfig.maxAuthFailures!) {
         state.blocked = true;
-        state.blockExpiresAt = Date.now() + fullConfig.blockDurationMs;
+        state.blockExpiresAt = Date.now() + fullConfig.blockDurationMs!;
         state.blockReason = "Too many authentication failures";
       }
     }
@@ -269,10 +275,7 @@ export function addToAllowlist(
   const normalized = normalizeOrigin(origin);
 
   if (!normalized || typeof normalized !== "string") {
-    return err<void>(
-      SorokitErrorCode.INVALID_CONFIG,
-      "Origin is required",
-    );
+    return err<void>(SorokitErrorCode.INVALID_CONFIG, "Origin is required");
   }
 
   // Remove from blocklist if present
@@ -299,10 +302,7 @@ export function addToBlocklist(
   const normalized = normalizeOrigin(origin);
 
   if (!normalized || typeof normalized !== "string") {
-    return err<void>(
-      SorokitErrorCode.INVALID_CONFIG,
-      "Origin is required",
-    );
+    return err<void>(SorokitErrorCode.INVALID_CONFIG, "Origin is required");
   }
 
   // Remove from allowlist if present
@@ -361,7 +361,10 @@ export function detectAbuse(
   origin: string,
   config?: ThrottlingConfig,
 ): SorokitResult<AbuseDetectionResult> {
-  const fullConfig = { ...DEFAULT_THROTTLING_CONFIG, ...config };
+  const fullConfig = {
+    ...DEFAULT_THROTTLING_CONFIG,
+    ...config,
+  } as Required<ThrottlingConfig>;
   const normalized = normalizeOrigin(origin);
 
   const state = getOrCreateState(normalized);
@@ -372,23 +375,22 @@ export function detectAbuse(
   const now = Date.now();
   const recentAttempts = connectionHistory.filter(
     (a) =>
-      a.origin === normalized &&
-      a.timestamp > now - fullConfig.timeWindowMs,
+      a.origin === normalized && a.timestamp > now - fullConfig.timeWindowMs!,
   );
 
-  if (recentAttempts.length >= fullConfig.maxAttemptsPerWindow) {
+  if (recentAttempts.length >= fullConfig.maxAttemptsPerWindow!) {
     patterns.push("rapid_connection_attempts");
     confidence += 0.3;
   }
 
   // Check for repeated failures
-  if (state.failedAttempts >= fullConfig.maxAttemptsPerWindow / 2) {
+  if (state.failedAttempts >= fullConfig.maxAttemptsPerWindow! / 2) {
     patterns.push("repeated_failures");
     confidence += 0.25;
   }
 
   // Check for authentication failures
-  if (state.authenticationFailures >= fullConfig.maxAuthFailures) {
+  if (state.authenticationFailures >= fullConfig.maxAuthFailures!) {
     patterns.push("authentication_failures");
     confidence += 0.25;
   }

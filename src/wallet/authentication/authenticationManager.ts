@@ -7,11 +7,10 @@
 
 import { ok, err, SorokitErrorCode } from "../../shared/response";
 import type { SorokitResult } from "../../shared/response";
+import { AuthenticationState, AuthenticationMethod } from "./types";
 import type {
   AuthenticationConfig,
   AuthenticationStatus,
-  AuthenticationState,
-  AuthenticationMethod,
   AuthenticationCredential,
   AuthenticationStorage,
   PINSetupOptions,
@@ -28,11 +27,12 @@ import { setupPIN, verifyPIN, changePIN, resetPIN } from "./pinAuth";
 import { registerWebAuthn, authenticateWebAuthn } from "./webAuthnAuth";
 import { InMemoryAuthenticationStorage } from "./storage";
 
-const DEFAULT_CONFIG: Required<Omit<AuthenticationConfig, "preferredMethod">> = {
-  sessionTimeoutMs: 15 * 60 * 1000, // 15 minutes
-  maxFailedAttempts: 5,
-  rateLimitDurationMs: 5 * 60 * 1000, // 5 minutes
-};
+const DEFAULT_CONFIG: Required<Omit<AuthenticationConfig, "preferredMethod">> =
+  {
+    sessionTimeoutMs: 15 * 60 * 1000, // 15 minutes
+    maxFailedAttempts: 5,
+    rateLimitDurationMs: 5 * 60 * 1000, // 5 minutes
+  };
 
 /**
  * Authentication manager for wallet access control.
@@ -70,7 +70,7 @@ export class WalletAuthenticationManager {
 
   constructor(
     config: AuthenticationConfig = {},
-    storage?: AuthenticationStorage
+    storage?: AuthenticationStorage,
   ) {
     this.config = {
       ...DEFAULT_CONFIG,
@@ -88,7 +88,9 @@ export class WalletAuthenticationManager {
    * @param walletId - Wallet identifier
    * @returns Current authentication status
    */
-  async getStatus(walletId: string): Promise<SorokitResult<AuthenticationStatus>> {
+  async getStatus(
+    walletId: string,
+  ): Promise<SorokitResult<AuthenticationStatus>> {
     const sessionResult = await this.storage.getSession(walletId);
     if (sessionResult.status === "error") {
       return sessionResult;
@@ -104,10 +106,14 @@ export class WalletAuthenticationManager {
       }
 
       const hasCredential = credentialResult.data !== null;
-      const method = hasCredential ? credentialResult.data!.method : AuthenticationMethod.NONE;
+      const method = hasCredential
+        ? credentialResult.data!.method
+        : AuthenticationMethod.NONE;
 
       status = {
-        state: hasCredential ? AuthenticationState.LOCKED : AuthenticationState.UNINITIALIZED,
+        state: hasCredential
+          ? AuthenticationState.LOCKED
+          : AuthenticationState.UNINITIALIZED,
         method,
         authenticatedAt: null,
         expiresAt: null,
@@ -144,7 +150,7 @@ export class WalletAuthenticationManager {
    */
   async setupPINAuthentication(
     walletId: string,
-    options: PINSetupOptions
+    options: PINSetupOptions,
   ): Promise<SorokitResult<void>> {
     const pinDataResult = await setupPIN(options);
     if (pinDataResult.status === "error") {
@@ -159,7 +165,10 @@ export class WalletAuthenticationManager {
       data: pinDataResult.data,
     };
 
-    const storeResult = await this.storage.storeCredential(walletId, credential);
+    const storeResult = await this.storage.storeCredential(
+      walletId,
+      credential,
+    );
     if (storeResult.status === "error") {
       return storeResult;
     }
@@ -189,10 +198,10 @@ export class WalletAuthenticationManager {
    */
   async setupWebAuthnAuthentication(
     walletId: string,
-    options: WebAuthnRegistrationOptions = {}
+    options: WebAuthnRegistrationOptions = {},
   ): Promise<SorokitResult<void>> {
     const capabilities = await detectAuthenticationCapabilities();
-    if (!capabilities.data.webauthn) {
+    if (!capabilities.data?.webauthn) {
       return err(
         SorokitErrorCode.WALLET_BROWSER_ONLY,
         "WebAuthn is not available in this environment",
@@ -212,7 +221,10 @@ export class WalletAuthenticationManager {
       data: webAuthnDataResult.data,
     };
 
-    const storeResult = await this.storage.storeCredential(walletId, credential);
+    const storeResult = await this.storage.storeCredential(
+      walletId,
+      credential,
+    );
     if (storeResult.status === "error") {
       return storeResult;
     }
@@ -242,7 +254,7 @@ export class WalletAuthenticationManager {
    */
   async unlock(
     walletId: string,
-    options: { method: AuthenticationMethod; pin?: string }
+    options: { method: AuthenticationMethod; pin?: string },
   ): Promise<SorokitResult<void>> {
     const statusResult = await this.getStatus(walletId);
     if (statusResult.status === "error") {
@@ -256,7 +268,9 @@ export class WalletAuthenticationManager {
       const now = new Date();
       const nextAttempt = new Date(status.nextAttemptAllowedAt);
       if (now < nextAttempt) {
-        const secondsRemaining = Math.ceil((nextAttempt.getTime() - now.getTime()) / 1000);
+        const secondsRemaining = Math.ceil(
+          (nextAttempt.getTime() - now.getTime()) / 1000,
+        );
         return err(
           SorokitErrorCode.WALLET_SIGN_REJECTED,
           `Too many failed attempts. Try again in ${secondsRemaining} seconds.`,
@@ -287,12 +301,12 @@ export class WalletAuthenticationManager {
       }
       authResult = await verifyPIN(
         { pin: options.pin },
-        credential.data as PINCredentialData
+        credential.data as PINCredentialData,
       );
     } else if (options.method === AuthenticationMethod.WEBAUTHN) {
       authResult = await authenticateWebAuthn(
         credential.data as WebAuthnCredentialData,
-        {}
+        {},
       );
     } else {
       return err(
@@ -377,7 +391,7 @@ export class WalletAuthenticationManager {
    */
   async changePINAuthentication(
     walletId: string,
-    options: PINChangeOptions
+    options: PINChangeOptions,
   ): Promise<SorokitResult<void>> {
     const credentialResult = await this.storage.getCredential(walletId);
     if (credentialResult.status === "error") {
@@ -394,7 +408,7 @@ export class WalletAuthenticationManager {
 
     const newPinDataResult = await changePIN(
       options,
-      credential.data as PINCredentialData
+      credential.data as PINCredentialData,
     );
     if (newPinDataResult.status === "error") {
       return newPinDataResult as SorokitResult<void>;
@@ -418,7 +432,9 @@ export class WalletAuthenticationManager {
    * @param walletId - Wallet identifier
    * @returns Reset result
    */
-  async resetAuthentication(walletId: string): Promise<SorokitResult<PINResetResult>> {
+  async resetAuthentication(
+    walletId: string,
+  ): Promise<SorokitResult<PINResetResult>> {
     await this.storage.removeCredential(walletId);
     await this.storage.clearSession(walletId);
 

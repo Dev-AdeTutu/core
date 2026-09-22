@@ -116,20 +116,28 @@ export async function calculateStorageRent(
 ): Promise<SorokitResult<StorageRentEstimate>> {
   try {
     // Validate contract ID format
-    if (!contractId || typeof contractId !== "string" || !contractId.startsWith("C")) {
-      return err({
-        code: SorokitErrorCode.INVALID_ADDRESS,
-        message: "Invalid contract ID format",
-        category: SorokitErrorCategory.VALIDATION,
-        context: {
-          operation: "calculateStorageRent",
-          parameters: { contractId },
+    if (
+      !contractId ||
+      typeof contractId !== "string" ||
+      !contractId.startsWith("C")
+    ) {
+      return err(
+        SorokitErrorCode.INVALID_ADDRESS,
+        "Invalid contract ID format",
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "calculateStorageRent",
+            parameters: { contractId },
+          },
         },
-      });
+      );
     }
 
     const config = DEFAULT_CONFIG;
-    const warningThreshold = options?.warningThresholdSeconds ?? config.warningThresholdSeconds;
+    const warningThreshold =
+      options?.warningThresholdSeconds ?? config.warningThresholdSeconds;
 
     // Mock implementation: In production, this would query the RPC to get actual storage entries
     // and their TTL values from the network
@@ -169,16 +177,18 @@ export async function calculateStorageRent(
       estimatedAt: Date.now(),
     });
   } catch (error) {
-    return err({
-      code: SorokitErrorCode.CONTRACT_READ_FAILED,
-      message: "Failed to calculate storage rent",
-      category: SorokitErrorCategory.CONTRACT,
-      cause: error,
-      context: {
-        operation: "calculateStorageRent",
-        parameters: { contractId },
+    return err(
+      SorokitErrorCode.CONTRACT_READ_FAILED,
+      "Failed to calculate storage rent",
+      error,
+      undefined,
+      {
+        context: {
+          operation: "calculateStorageRent",
+          parameters: { contractId },
+        },
       },
-    });
+    );
   }
 }
 
@@ -209,31 +219,40 @@ export async function renewContractStorage(
 ): Promise<SorokitResult<StorageRenewalOperation>> {
   try {
     // Validate contract ID
-    if (!contractId || typeof contractId !== "string" || !contractId.startsWith("C")) {
-      return err({
-        code: SorokitErrorCode.INVALID_ADDRESS,
-        message: "Invalid contract ID for renewal",
-        category: SorokitErrorCategory.VALIDATION,
-        context: {
-          operation: "renewContractStorage",
-          parameters: { contractId },
+    if (
+      !contractId ||
+      typeof contractId !== "string" ||
+      !contractId.startsWith("C")
+    ) {
+      return err(
+        SorokitErrorCode.INVALID_ADDRESS,
+        "Invalid contract ID for renewal",
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "renewContractStorage",
+            parameters: { contractId },
+          },
         },
-      });
+      );
     }
 
     // First, get current storage state
     const rentResult = await calculateStorageRent(contractId, options);
     if (rentResult.status === "error") {
-      return err({
-        code: rentResult.error.code,
-        message: "Failed to assess storage before renewal",
-        category: rentResult.error.category,
-        cause: rentResult.error.cause,
-        context: {
-          operation: "renewContractStorage",
-          parameters: { contractId, options },
+      return err(
+        rentResult.error.code,
+        "Failed to assess storage before renewal",
+        rentResult.error.cause,
+        undefined,
+        {
+          context: {
+            operation: "renewContractStorage",
+            parameters: { contractId, options },
+          },
         },
-      });
+      );
     }
 
     const estimate = rentResult.data;
@@ -251,15 +270,18 @@ export async function renewContractStorage(
     }
 
     if (entryKeysToRenew.length === 0) {
-      return err({
-        code: SorokitErrorCode.INVALID_CONFIG,
-        message: "No entries to renew",
-        category: SorokitErrorCategory.VALIDATION,
-        context: {
-          operation: "renewContractStorage",
-          parameters: { contractId, options },
+      return err(
+        SorokitErrorCode.INVALID_CONFIG,
+        "No entries to renew",
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "renewContractStorage",
+            parameters: { contractId, options },
+          },
         },
-      });
+      );
     }
 
     // Mock operation XDR - in production this would be generated from Soroban
@@ -275,16 +297,18 @@ export async function renewContractStorage(
       suggestedSequence: "1",
     });
   } catch (error) {
-    return err({
-      code: SorokitErrorCode.CONTRACT_INVOKE_FAILED,
-      message: "Failed to build renewal operation",
-      category: SorokitErrorCategory.CONTRACT,
-      cause: error,
-      context: {
-        operation: "renewContractStorage",
-        parameters: { contractId, options },
+    return err(
+      SorokitErrorCode.CONTRACT_INVOKE_FAILED,
+      "Failed to build renewal operation",
+      error,
+      undefined,
+      {
+        context: {
+          operation: "renewContractStorage",
+          parameters: { contractId, options },
+        },
       },
-    });
+    );
   }
 }
 

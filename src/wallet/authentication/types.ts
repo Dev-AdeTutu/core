@@ -72,7 +72,7 @@ export interface PINSetupOptions {
   /** The PIN to set (must be 4-8 digits) */
   pin: string;
   /** Optional hint for PIN recovery (should not reveal the PIN) */
-  hint?: string;
+  hint?: string | undefined;
 }
 
 /**
@@ -192,13 +192,18 @@ export interface AuthenticationStorage {
    * @param walletId - Wallet identifier
    * @param credential - Credential to store
    */
-  storeCredential(walletId: string, credential: AuthenticationCredential): Promise<SorokitResult<void>>;
+  storeCredential(
+    walletId: string,
+    credential: AuthenticationCredential,
+  ): Promise<SorokitResult<void>>;
 
   /**
    * Retrieve authentication credential for a wallet.
    * @param walletId - Wallet identifier
    */
-  getCredential(walletId: string): Promise<SorokitResult<AuthenticationCredential | null>>;
+  getCredential(
+    walletId: string,
+  ): Promise<SorokitResult<AuthenticationCredential | null>>;
 
   /**
    * Remove authentication credential for a wallet.
@@ -211,13 +216,18 @@ export interface AuthenticationStorage {
    * @param walletId - Wallet identifier
    * @param status - Current authentication status
    */
-  storeSession(walletId: string, status: AuthenticationStatus): Promise<SorokitResult<void>>;
+  storeSession(
+    walletId: string,
+    status: AuthenticationStatus,
+  ): Promise<SorokitResult<void>>;
 
   /**
    * Retrieve authentication session state.
    * @param walletId - Wallet identifier
    */
-  getSession(walletId: string): Promise<SorokitResult<AuthenticationStatus | null>>;
+  getSession(
+    walletId: string,
+  ): Promise<SorokitResult<AuthenticationStatus | null>>;
 
   /**
    * Clear authentication session state.

@@ -33,21 +33,21 @@ export interface QueuedTransaction {
   /** Current status */
   status: QueueItemStatus;
   /** Dependencies on other transaction IDs */
-  dependsOn?: string[];
+  dependsOn?: string[] | undefined;
   /** When this transaction was queued (Unix milliseconds) */
   queuedAt: number;
   /** When processing started (Unix milliseconds) */
-  processingStartedAt?: number;
+  processingStartedAt?: number | undefined;
   /** When processing completed (Unix milliseconds) */
-  completedAt?: number;
+  completedAt?: number | undefined;
   /** Error message if failed */
-  error?: string;
+  error?: string | undefined;
   /** Number of retry attempts */
   retryCount: number;
   /** Maximum retry attempts allowed */
   maxRetries: number;
   /** Result hash if transaction was submitted successfully */
-  resultHash?: string;
+  resultHash?: string | undefined;
 }
 
 /**
@@ -125,7 +125,7 @@ const DEFAULT_CONFIG: Required<TransactionQueueConfig> = {
 export class TransactionQueue {
   private queue: Map<string, QueuedTransaction> = new Map();
   private config: Required<TransactionQueueConfig>;
-  private processingScheduleId?: NodeJS.Timeout;
+  private processingScheduleId?: NodeJS.Timeout | undefined;
   private batchCounter: number = 0;
 
   /**
@@ -155,43 +155,52 @@ export class TransactionQueue {
     try {
       // Check for duplicates
       if (this.queue.has(id)) {
-        return err({
-          code: SorokitErrorCode.INVALID_CONFIG,
-          message: "Transaction with this ID already exists in queue",
-          category: SorokitErrorCategory.VALIDATION,
-          context: {
-            operation: "enqueue",
-            parameters: { id },
+        return err(
+          SorokitErrorCode.INVALID_CONFIG,
+          "Transaction with this ID already exists in queue",
+          undefined,
+          undefined,
+          {
+            context: {
+              operation: "enqueue",
+              parameters: { id },
+            },
           },
-        });
+        );
       }
 
       // Check queue size limit
       if (this.queue.size >= this.config.maxQueueSize) {
-        return err({
-          code: SorokitErrorCode.TX_SUBMIT_FAILED,
-          message: "Queue is full",
-          category: SorokitErrorCategory.TRANSACTION,
-          context: {
-            operation: "enqueue",
-            parameters: { queueSize: this.queue.size },
+        return err(
+          SorokitErrorCode.TX_SUBMIT_FAILED,
+          "Queue is full",
+          undefined,
+          undefined,
+          {
+            context: {
+              operation: "enqueue",
+              parameters: { queueSize: this.queue.size },
+            },
           },
-        });
+        );
       }
 
       // Validate dependencies exist
       if (dependsOn) {
         for (const depId of dependsOn) {
           if (!this.queue.has(depId)) {
-            return err({
-              code: SorokitErrorCode.INVALID_CONFIG,
-              message: `Dependency transaction ${depId} not found in queue`,
-              category: SorokitErrorCategory.VALIDATION,
-              context: {
-                operation: "enqueue",
-                parameters: { id, dependsOn },
+            return err(
+              SorokitErrorCode.INVALID_CONFIG,
+              `Dependency transaction ${depId} not found in queue`,
+              undefined,
+              undefined,
+              {
+                context: {
+                  operation: "enqueue",
+                  parameters: { id, dependsOn },
+                },
               },
-            });
+            );
           }
         }
       }
@@ -210,12 +219,17 @@ export class TransactionQueue {
       this.queue.set(id, transaction);
       return ok(transaction);
     } catch (error) {
-      return err({
-        code: SorokitErrorCode.INTERNAL,
-        message: "Failed to enqueue transaction",
-        category: SorokitErrorCategory.INTERNAL,
-        cause: error,
-      });
+      return err(
+        SorokitErrorCode.INTERNAL,
+        "Failed to enqueue transaction",
+        error,
+        undefined,
+        {
+          context: {
+            operation: "enqueue",
+          },
+        },
+      );
     }
   }
 
@@ -300,11 +314,18 @@ export class TransactionQueue {
   markCompleted(id: string, resultHash?: string): SorokitResult<void> {
     const tx = this.queue.get(id);
     if (!tx) {
-      return err({
-        code: SorokitErrorCode.TX_NOT_FOUND,
-        message: `Transaction ${id} not found in queue`,
-        category: SorokitErrorCategory.TRANSACTION,
-      });
+      return err(
+        SorokitErrorCode.TX_NOT_FOUND,
+        `Transaction ${id} not found in queue`,
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "markCompleted",
+            parameters: { id },
+          },
+        },
+      );
     }
 
     tx.status = "completed";
@@ -326,11 +347,18 @@ export class TransactionQueue {
   markFailed(id: string, error: string): SorokitResult<"retry" | "failed"> {
     const tx = this.queue.get(id);
     if (!tx) {
-      return err({
-        code: SorokitErrorCode.TX_NOT_FOUND,
-        message: `Transaction ${id} not found in queue`,
-        category: SorokitErrorCategory.TRANSACTION,
-      });
+      return err(
+        SorokitErrorCode.TX_NOT_FOUND,
+        `Transaction ${id} not found in queue`,
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "markFailed",
+            parameters: { id },
+          },
+        },
+      );
     }
 
     tx.error = error;
@@ -366,19 +394,33 @@ export class TransactionQueue {
   cancel(id: string): SorokitResult<void> {
     const tx = this.queue.get(id);
     if (!tx) {
-      return err({
-        code: SorokitErrorCode.TX_NOT_FOUND,
-        message: `Transaction ${id} not found in queue`,
-        category: SorokitErrorCategory.TRANSACTION,
-      });
+      return err(
+        SorokitErrorCode.TX_NOT_FOUND,
+        `Transaction ${id} not found in queue`,
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "cancel",
+            parameters: { id },
+          },
+        },
+      );
     }
 
     if (tx.status !== "pending") {
-      return err({
-        code: SorokitErrorCode.INVALID_CONFIG,
-        message: "Can only cancel pending transactions",
-        category: SorokitErrorCategory.VALIDATION,
-      });
+      return err(
+        SorokitErrorCode.INVALID_CONFIG,
+        "Can only cancel pending transactions",
+        undefined,
+        undefined,
+        {
+          context: {
+            operation: "cancel",
+            parameters: { id, status: tx.status },
+          },
+        },
+      );
     }
 
     this.queue.delete(id);
@@ -410,7 +452,9 @@ export class TransactionQueue {
    * @param submissionFn - Function to call for batch submission
    */
   startScheduling(
-    submissionFn: (batch: QueuedTransaction[]) => Promise<BatchSubmissionResult>,
+    submissionFn: (
+      batch: QueuedTransaction[],
+    ) => Promise<BatchSubmissionResult>,
   ): void {
     if (this.processingScheduleId) return;
 

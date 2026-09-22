@@ -27,9 +27,13 @@ function isWebAuthnAvailable(): boolean {
 /**
  * Generate a random challenge for WebAuthn operations.
  */
-function generateChallenge(): Uint8Array {
-  const challenge = new Uint8Array(32);
-  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues !== "undefined") {
+function generateChallenge(): BufferSource {
+  const buffer = new ArrayBuffer(32);
+  const challenge = new Uint8Array(buffer);
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.getRandomValues !== "undefined"
+  ) {
     crypto.getRandomValues(challenge);
   } else {
     // Fallback for testing (not cryptographically secure)
@@ -47,7 +51,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
   for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+    const byte = bytes[i];
+    if (byte !== undefined) {
+      binary += String.fromCharCode(byte);
+    }
   }
   return btoa(binary);
 }
@@ -85,7 +92,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
  */
 export async function registerWebAuthn(
   walletId: string,
-  options: WebAuthnRegistrationOptions = {}
+  options: WebAuthnRegistrationOptions = {},
 ): Promise<SorokitResult<WebAuthnCredentialData>> {
   if (!isWebAuthnAvailable()) {
     return err(
@@ -96,7 +103,7 @@ export async function registerWebAuthn(
 
   try {
     const challenge = generateChallenge();
-    
+
     const publicKeyOptions: PublicKeyCredentialCreationOptions = {
       challenge,
       rp: {
@@ -109,20 +116,22 @@ export async function registerWebAuthn(
         displayName: `Wallet ${walletId.slice(0, 8)}`,
       },
       pubKeyCredParams: [
-        { alg: -7, type: "public-key" },  // ES256
+        { alg: -7, type: "public-key" }, // ES256
         { alg: -257, type: "public-key" }, // RS256
       ],
       authenticatorSelection: {
-        userVerification: options.requireUserVerification ? "required" : "preferred",
+        userVerification: options.requireUserVerification
+          ? "required"
+          : "preferred",
         authenticatorAttachment: "platform", // Prefer platform authenticators (Touch ID, Windows Hello)
       },
       timeout: 60000,
       attestation: "none",
     };
 
-    const credential = await navigator.credentials.create({
+    const credential = (await navigator.credentials.create({
       publicKey: publicKeyOptions,
-    }) as PublicKeyCredential | null;
+    })) as PublicKeyCredential | null;
 
     if (!credential) {
       return err(
@@ -132,18 +141,21 @@ export async function registerWebAuthn(
     }
 
     const response = credential.response as AuthenticatorAttestationResponse;
-    
+
     const credentialData: WebAuthnCredentialData = {
       credentialId: arrayBufferToBase64(credential.rawId),
       publicKey: arrayBufferToBase64(response.getPublicKey()!),
       counter: 0,
-      ...(options.authenticatorName ? { authenticatorName: options.authenticatorName } : {}),
+      ...(options.authenticatorName
+        ? { authenticatorName: options.authenticatorName }
+        : {}),
     };
 
     return ok(credentialData);
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+
     // User cancelled or denied the operation
     if (errorMessage.includes("cancel") || errorMessage.includes("abort")) {
       return err(
@@ -179,7 +191,7 @@ export async function registerWebAuthn(
  */
 export async function authenticateWebAuthn(
   storedCredential: WebAuthnCredentialData,
-  options: WebAuthnAuthenticationOptions = {}
+  options: WebAuthnAuthenticationOptions = {},
 ): Promise<SorokitResult<void>> {
   if (!isWebAuthnAvailable()) {
     return err(
@@ -201,13 +213,15 @@ export async function authenticateWebAuthn(
           transports: ["internal", "usb", "nfc", "ble"],
         },
       ],
-      userVerification: options.requireUserVerification ? "required" : "preferred",
+      userVerification: options.requireUserVerification
+        ? "required"
+        : "preferred",
       timeout: 60000,
     };
 
-    const assertion = await navigator.credentials.get({
+    const assertion = (await navigator.credentials.get({
       publicKey: publicKeyOptions,
-    }) as PublicKeyCredential | null;
+    })) as PublicKeyCredential | null;
 
     if (!assertion) {
       return err(
@@ -231,8 +245,9 @@ export async function authenticateWebAuthn(
 
     return ok(undefined);
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+
     // User cancelled or denied the operation
     if (errorMessage.includes("cancel") || errorMessage.includes("abort")) {
       return err(

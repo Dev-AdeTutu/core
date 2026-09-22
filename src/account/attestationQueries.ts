@@ -9,7 +9,6 @@ import type {
 import type { SorokitResult } from "../shared/response";
 import { SorokitErrorCode, err, ok } from "../shared/response";
 import { isAttestationRevoked } from "./attestationCore";
-import { isAttestationRevoked } from "./attestationCore";
 
 /**
  * In-memory storage for account attestations.
@@ -86,7 +85,13 @@ export function getAccountAttestations(
       if (att.revoked) return false;
 
       // Also check the revocation registry (for attestations revoked after storage)
-      if (isAttestationRevoked(att.subject, att.credential.issuer, att.credential.credentialId)) {
+      if (
+        isAttestationRevoked(
+          att.subject,
+          att.credential.issuer,
+          att.credential.credentialId,
+        )
+      ) {
         return false;
       }
 

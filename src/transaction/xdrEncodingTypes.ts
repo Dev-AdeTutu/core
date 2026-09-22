@@ -6,16 +6,7 @@
 /**
  * Encoding strategy for XDR payloads.
  */
-export enum EncodingStrategy {
-  /** No compression applied */
-  NONE = "none",
-  /** DEFLATE compression for large payloads */
-  DEFLATE = "deflate",
-  /** Delta-based encoding for similar transactions */
-  DELTA = "delta",
-  /** Composite strategy (best fit selection) */
-  AUTO = "auto",
-}
+export type EncodingStrategy = "auto" | "none" | "deflate" | "delta";
 
 /**
  * Metadata describing how a payload was encoded.

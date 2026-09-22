@@ -54,7 +54,10 @@ function toArchivedEvent(event: ContractEvent): ArchivedContractEvent | null {
     value: event.value,
     ledger: event.ledger,
     timestamp,
-    transactionHash: typeof event.transaction_hash === "string" ? event.transaction_hash : undefined,
+    transactionHash:
+      typeof event.transaction_hash === "string"
+        ? event.transaction_hash
+        : undefined,
     emitter: typeof event.emitter === "string" ? event.emitter : undefined,
     metadata: {
       ...event,
@@ -93,9 +96,14 @@ export class EventArchivalManager {
   private storage: EventArchiveStorage;
   private batchSize: number;
   private deduplicate: boolean;
-  private onStorageError?: (error: Error, events: ArchivedContractEvent[]) => void;
+  private onStorageError?:
+    | ((error: Error, events: ArchivedContractEvent[]) => void)
+    | undefined;
 
-  constructor(storage: EventArchiveStorage, options?: Partial<EventArchivalOptions>) {
+  constructor(
+    storage: EventArchiveStorage,
+    options?: Partial<EventArchivalOptions>,
+  ) {
     this.storage = storage;
     this.batchSize = options?.batchSize ?? 50;
     this.deduplicate = options?.deduplicate ?? true;
@@ -116,7 +124,7 @@ export class EventArchivalManager {
   async archiveContractEvents(
     contractId: string,
     filter: ContractEventFilter | undefined,
-    options: ContractEventSubscriptionOptions
+    options: ContractEventSubscriptionOptions,
   ): Promise<SorokitResult<EventArchivalSubscription>> {
     try {
       const stats: ArchivalStats = {
@@ -182,7 +190,7 @@ export class EventArchivalManager {
             if (this.onStorageError) {
               this.onStorageError(
                 new Error(storeResult.error.message),
-                eventsToStore
+                eventsToStore,
               );
             }
           }
@@ -191,7 +199,7 @@ export class EventArchivalManager {
           if (this.onStorageError) {
             this.onStorageError(
               error instanceof Error ? error : new Error(String(error)),
-              eventsToStore
+              eventsToStore,
             );
           }
         }
@@ -229,7 +237,7 @@ export class EventArchivalManager {
         contractId,
         filter,
         handleEvents,
-        options
+        options,
       );
 
       return ok({
@@ -255,7 +263,7 @@ export class EventArchivalManager {
    * @returns Query results with pagination
    */
   async queryArchivedEvents(
-    query: EventArchiveQuery
+    query: EventArchiveQuery,
   ): Promise<SorokitResult<ArchiveQueryResult>> {
     return this.storage.query(query);
   }
@@ -269,7 +277,7 @@ export class EventArchivalManager {
    */
   async getEventAggregation(
     query: EventArchiveQuery,
-    intervalMs?: number
+    intervalMs?: number,
   ): Promise<SorokitResult<EventAggregation>> {
     return this.storage.aggregate(query, intervalMs);
   }
@@ -281,7 +289,7 @@ export class EventArchivalManager {
    * @returns Number of deleted events
    */
   async deleteArchivedEvents(
-    query: EventArchiveQuery
+    query: EventArchiveQuery,
   ): Promise<SorokitResult<number>> {
     return this.storage.delete(query);
   }
@@ -312,7 +320,7 @@ export class EventArchivalManager {
  */
 export async function queryContractEventArchive(
   storage: EventArchiveStorage,
-  query: EventArchiveQuery
+  query: EventArchiveQuery,
 ): Promise<SorokitResult<ArchiveQueryResult>> {
   return storage.query(query);
 }
@@ -334,7 +342,7 @@ export async function queryContractEventArchive(
 export async function calculateArchivedEventRate(
   storage: EventArchiveStorage,
   query: EventArchiveQuery,
-  windowMs?: number
+  windowMs?: number,
 ): Promise<SorokitResult<number>> {
   const aggResult = await storage.aggregate(query, windowMs);
   if (aggResult.status === "error") {
@@ -361,7 +369,7 @@ export async function calculateArchivedEventRate(
 export async function getArchivedEventTimeSeries(
   storage: EventArchiveStorage,
   query: EventArchiveQuery,
-  intervalMs: number
+  intervalMs: number,
 ): Promise<SorokitResult<EventAggregation>> {
   return storage.aggregate(query, intervalMs);
 }

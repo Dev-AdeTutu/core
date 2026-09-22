@@ -19,9 +19,9 @@ export interface RateLimitRule {
   /** Type of rule */
   type: RateLimitRuleType;
   /** Optional expiration timestamp */
-  expiresAt?: number;
+  expiresAt?: number | undefined;
   /** Reason for the rule */
-  reason?: string;
+  reason?: string | undefined;
 }
 
 /**
@@ -35,7 +35,7 @@ export interface ConnectionAttempt {
   /** Whether the attempt succeeded */
   success: boolean;
   /** Reason if failed (e.g., "SIGNATURE_REJECTED", "TIMEOUT") */
-  failureReason?: string;
+  failureReason?: string | undefined;
 }
 
 /**
@@ -55,13 +55,13 @@ export interface OriginRateLimitState {
   /** Whether this origin is currently blocked */
   blocked: boolean;
   /** When the block expires (if applicable) */
-  blockExpiresAt?: number;
+  blockExpiresAt?: number | undefined;
   /** Reason for blocking */
-  blockReason?: string;
+  blockReason?: string | undefined;
   /** Timestamp of last attempt */
-  lastAttemptAt?: number;
+  lastAttemptAt?: number | undefined;
   /** Timestamp of last successful connection */
-  lastSuccessAt?: number;
+  lastSuccessAt?: number | undefined;
 }
 
 /**
@@ -69,21 +69,21 @@ export interface OriginRateLimitState {
  */
 export interface ThrottlingConfig {
   /** Maximum connection attempts per time window */
-  maxAttemptsPerWindow?: number;
+  maxAttemptsPerWindow?: number | undefined;
   /** Time window in milliseconds */
-  timeWindowMs?: number;
+  timeWindowMs?: number | undefined;
   /** Maximum authentication failures before temporary block */
-  maxAuthFailures?: number;
+  maxAuthFailures?: number | undefined;
   /** Temporary block duration in milliseconds */
-  blockDurationMs?: number;
+  blockDurationMs?: number | undefined;
   /** Enable origin-based rate limiting */
-  enableOriginTracking?: boolean;
+  enableOriginTracking?: boolean | undefined;
   /** Enable authentication failure tracking */
-  enableAuthFailureTracking?: boolean;
+  enableAuthFailureTracking?: boolean | undefined;
   /** Grace period for legitimate reconnects (ms) */
-  reconnectGraceMs?: number;
+  reconnectGraceMs?: number | undefined;
   /** Whether throttling is enabled */
-  enabled?: boolean;
+  enabled?: boolean | undefined;
 }
 
 /**
@@ -93,13 +93,13 @@ export interface ThrottleCheckResult {
   /** Whether the connection should be allowed */
   allowed: boolean;
   /** Reason if denied */
-  reason?: string;
+  reason?: string | undefined;
   /** Time until block expires (if applicable) */
-  blockExpiresIn?: number;
+  blockExpiresIn?: number | undefined;
   /** Recommended retry time in milliseconds */
-  retryAfterMs?: number;
+  retryAfterMs?: number | undefined;
   /** Current state for the origin */
-  state?: OriginRateLimitState;
+  state?: OriginRateLimitState | undefined;
 }
 
 /**

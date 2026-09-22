@@ -84,10 +84,13 @@ export enum SorokitErrorCode {
   OPERATION_TIMEOUT = "OPERATION_TIMEOUT",
   INVALID_CONFIG = "INVALID_CONFIG",
   INVALID_ADDRESS = "INVALID_ADDRESS",
+  VALIDATION = "VALIDATION",
+  INTERNAL = "INTERNAL",
   UNKNOWN = "UNKNOWN",
 }
 
-const SENSITIVE_KEY = /(secret|password|token|mnemonic|private|seed|authorization|api[-_]?key)/i;
+const SENSITIVE_KEY =
+  /(secret|password|token|mnemonic|private|seed|authorization|api[-_]?key)/i;
 
 function sanitizeValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitizeValue);
@@ -100,45 +103,90 @@ function sanitizeValue(value: unknown): unknown {
   );
 }
 
-export function sanitizeErrorContext(context?: SorokitErrorContext): SorokitErrorContext | undefined {
+export function sanitizeErrorContext(
+  context?: SorokitErrorContext,
+): SorokitErrorContext | undefined {
   if (!context) return undefined;
   return {
-    ...(context.operation !== undefined ? { operation: context.operation } : {}),
+    ...(context.operation !== undefined
+      ? { operation: context.operation }
+      : {}),
     ...(context.parameters !== undefined
-      ? { parameters: sanitizeValue(context.parameters) as Record<string, unknown> }
+      ? {
+          parameters: sanitizeValue(context.parameters) as Record<
+            string,
+            unknown
+          >,
+        }
       : {}),
   };
 }
 
 export function classifyError(code: SorokitErrorCode): SorokitErrorCategory {
-  if (code === SorokitErrorCode.INVALID_CONFIG || code === SorokitErrorCode.INVALID_ADDRESS) {
+  if (
+    code === SorokitErrorCode.INVALID_CONFIG ||
+    code === SorokitErrorCode.INVALID_ADDRESS
+  ) {
     return SorokitErrorCategory.VALIDATION;
   }
-  if (code === SorokitErrorCode.OPERATION_TIMEOUT) return SorokitErrorCategory.TIMEOUT;
-  if ([SorokitErrorCode.NETWORK_ERROR, SorokitErrorCode.INVALID_NETWORK, SorokitErrorCode.SERVICE_UNAVAILABLE].includes(code)) {
+  if (code === SorokitErrorCode.OPERATION_TIMEOUT)
+    return SorokitErrorCategory.TIMEOUT;
+  if (
+    [
+      SorokitErrorCode.NETWORK_ERROR,
+      SorokitErrorCode.INVALID_NETWORK,
+      SorokitErrorCode.SERVICE_UNAVAILABLE,
+    ].includes(code)
+  ) {
     return SorokitErrorCategory.NETWORK;
   }
   if (code.startsWith("CONTRACT")) return SorokitErrorCategory.CONTRACT;
   if (code.startsWith("WALLET")) return SorokitErrorCategory.WALLET;
-  if (code.startsWith("TX_") || code.startsWith("ROUTER_")) return SorokitErrorCategory.TRANSACTION;
+  if (code.startsWith("TX_") || code.startsWith("ROUTER_"))
+    return SorokitErrorCategory.TRANSACTION;
   if (code.startsWith("ACCOUNT")) return SorokitErrorCategory.INTERNAL;
   return SorokitErrorCategory.UNKNOWN;
 }
 
-export function defaultRecoveryGuidance(category: SorokitErrorCategory): RecoveryGuidance {
+export function defaultRecoveryGuidance(
+  category: SorokitErrorCategory,
+): RecoveryGuidance {
   switch (category) {
     case SorokitErrorCategory.NETWORK:
-      return { retryable: true, action: "Check connectivity and endpoint health, then retry with backoff." };
+      return {
+        retryable: true,
+        action:
+          "Check connectivity and endpoint health, then retry with backoff.",
+      };
     case SorokitErrorCategory.TIMEOUT:
-      return { retryable: true, action: "Retry after confirming the operation has not already been submitted." };
+      return {
+        retryable: true,
+        action:
+          "Retry after confirming the operation has not already been submitted.",
+      };
     case SorokitErrorCategory.VALIDATION:
-      return { retryable: false, action: "Correct the reported input and submit the operation again." };
+      return {
+        retryable: false,
+        action: "Correct the reported input and submit the operation again.",
+      };
     case SorokitErrorCategory.WALLET:
-      return { retryable: false, action: "Reconnect or select an approved wallet and request authorization again." };
+      return {
+        retryable: false,
+        action:
+          "Reconnect or select an approved wallet and request authorization again.",
+      };
     case SorokitErrorCategory.CONTRACT:
-      return { retryable: false, action: "Inspect the contract error and simulation inputs before retrying." };
+      return {
+        retryable: false,
+        action:
+          "Inspect the contract error and simulation inputs before retrying.",
+      };
     default:
-      return { retryable: false, action: "Inspect the operation context and underlying cause before retrying." };
+      return {
+        retryable: false,
+        action:
+          "Inspect the operation context and underlying cause before retrying.",
+      };
   }
 }
 
@@ -159,37 +207,58 @@ export function err<T>(
     message,
     category,
     ...(cause !== undefined ? { cause } : {}),
-    ...(options?.context ? { context: sanitizeErrorContext(options.context)! } : {}),
+    ...(options?.context
+      ? { context: sanitizeErrorContext(options.context)! }
+      : {}),
     recovery: options?.recovery ?? defaultRecoveryGuidance(category),
     ...(traceId !== undefined ? { traceId } : {}),
   };
-  return Object.freeze({ status: "error", data: null, error }) as SorokitResult<T>;
+  return Object.freeze({
+    status: "error",
+    data: null,
+    error,
+  }) as SorokitResult<T>;
 }
 
-export function attachTraceId<T>(result: SorokitResult<T>, traceId: string): SorokitResult<T> {
+export function attachTraceId<T>(
+  result: SorokitResult<T>,
+  traceId: string,
+): SorokitResult<T> {
   if (result.status === "error" && result.error.traceId === undefined) {
     return { ...result, error: { ...result.error, traceId } };
   }
   return result;
 }
 
-export function isOk<T>(result: SorokitResult<T>): result is { status: "ok"; data: T; error: null } {
+export function isOk<T>(
+  result: SorokitResult<T>,
+): result is { status: "ok"; data: T; error: null } {
   return result.status === "ok";
 }
 
-export function isErr<T>(result: SorokitResult<T>): result is { status: "error"; data: null; error: SorokitError } {
+export function isErr<T>(
+  result: SorokitResult<T>,
+): result is { status: "error"; data: null; error: SorokitError } {
   return result.status === "error";
 }
 
 export function isErrorCode<T, C extends SorokitErrorCode>(
   result: SorokitResult<T>,
   code: C,
-): result is { status: "error"; data: null; error: SorokitError & { code: C } } {
+): result is {
+  status: "error";
+  data: null;
+  error: SorokitError & { code: C };
+} {
   return result.status === "error" && result.error.code === code;
 }
 
-export function assertOk<T>(result: SorokitResult<T>): asserts result is { status: "ok"; data: T; error: null } {
+export function assertOk<T>(
+  result: SorokitResult<T>,
+): asserts result is { status: "ok"; data: T; error: null } {
   if (result.status === "error") {
-    throw new Error(`Expected ok result but got error: [${result.error.code}] ${result.error.message}`);
+    throw new Error(
+      `Expected ok result but got error: [${result.error.code}] ${result.error.message}`,
+    );
   }
 }
