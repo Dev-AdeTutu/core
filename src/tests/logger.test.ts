@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  createConsoleTransport,
   createLogger,
+  registerLogTransport,
   withLogging,
   type SorokitLogger,
+  type StructuredLogRecord,
   type StructuredLogMeta,
 } from "../shared/logger";
 import { ok, err, SorokitErrorCode } from "../shared/response";
@@ -93,6 +96,82 @@ describe("shared/logger", () => {
 
       infoSpy.mockRestore();
     });
+
+    it("applies a custom prefix to console output (#257)", () => {
+      const debugSpy = vi
+        .spyOn(console, "debug")
+        .mockImplementation(() => undefined);
+      const logger = createLogger({
+        logLevel: "debug",
+        prefix: "[sorokit:testnet]",
+      });
+
+      logger.debug("prefixed");
+
+      expect(debugSpy).toHaveBeenCalledWith(
+        "[sorokit:testnet]",
+        expect.objectContaining({
+          level: "debug",
+          message: "prefixed",
+        }),
+      );
+
+      debugSpy.mockRestore();
+    });
+
+    it("writes structured records to registered transports and redacts secrets", () => {
+      const records: StructuredLogRecord[] = [];
+      const unregister = registerLogTransport({
+        write: (record) => records.push(record),
+      });
+      const logger = createLogger({ logLevel: "debug" });
+
+      logger.info("wallet.sign", {
+        module: "wallet",
+        secretKey: "SSECRET",
+        nested: { authToken: "token" },
+      });
+      unregister();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toEqual(
+        expect.objectContaining({
+          level: "info",
+          module: "wallet",
+          message: "wallet.sign",
+          timestamp: expect.any(String),
+        }),
+      );
+      expect(records[0]?.context?.secretKey).toBe("[redacted]");
+      expect((records[0]?.context?.nested as StructuredLogMeta).authToken).toBe("[redacted]");
+    });
+
+    it("supports per-module log levels and custom transports", () => {
+      const records: StructuredLogRecord[] = [];
+      const logger = createLogger({
+        logLevel: "error",
+        moduleLevels: { account: "debug" },
+        transports: [{ write: (record) => records.push(record) }],
+      });
+
+      logger.debug("account.get", { module: "account" });
+      logger.warn("wallet.connect", { module: "wallet" });
+
+      expect(records.map((record) => record.message)).toEqual(["account.get"]);
+    });
+
+    it("creates a console transport", () => {
+      const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      createConsoleTransport("[custom]").write({
+        timestamp: "2026-01-01T00:00:00.000Z",
+        level: "info",
+        module: "test",
+        message: "hello",
+      });
+
+      expect(infoSpy).toHaveBeenCalledWith("[custom]", expect.objectContaining({ message: "hello" }));
+      infoSpy.mockRestore();
+    });
   });
 
   describe("withLogging", () => {
@@ -155,6 +234,43 @@ describe("createSorokitClient logger integration", () => {
         network: "testnet",
       }),
     );
+  });
+
+  it("uses logPrefix in console output when debug is enabled (#257)", () => {
+    const debugSpy = vi
+      .spyOn(console, "debug")
+      .mockImplementation(() => undefined);
+
+    const result = createSorokitClient({
+      network: "testnet",
+      debug: true,
+      logPrefix: "[app:testnet]",
+      cache: {
+        get: () => undefined,
+        set: () => undefined,
+        invalidate: () => undefined,
+        clear: () => undefined,
+      },
+    });
+
+    expect(result.status).toBe("ok");
+    // client.create emits info; cache probe emits debug — both use logPrefix
+    expect(consoleInfoSpy).toHaveBeenCalledWith(
+      "[app:testnet]",
+      expect.objectContaining({
+        operation: "client.create",
+        status: "ok",
+        network: "testnet",
+      }),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(
+      "[app:testnet]",
+      expect.objectContaining({
+        message: "client.create: checked cache for recovered wallet state",
+      }),
+    );
+
+    debugSpy.mockRestore();
   });
 
   it("does not log wallet.emptyState calls", () => {

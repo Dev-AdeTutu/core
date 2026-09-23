@@ -10,6 +10,15 @@ export interface NetworkOverrides {
   rpcUrl?: string | undefined;
 }
 
+function isValidUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Resolve a NetworkConfig from a network type and optional overrides.
  *
@@ -35,6 +44,24 @@ export function resolveNetwork(
     );
   }
   if (!overrides) return ok(base);
+
+  if (
+    overrides.horizonUrl !== undefined &&
+    !isValidUrl(overrides.horizonUrl)
+  ) {
+    return err(
+      SorokitErrorCode.INVALID_NETWORK,
+      `Invalid horizonUrl: "${overrides.horizonUrl}". Must be a non-empty URL starting with http:// or https://.`,
+    );
+  }
+
+  if (overrides.rpcUrl !== undefined && !isValidUrl(overrides.rpcUrl)) {
+    return err(
+      SorokitErrorCode.INVALID_NETWORK,
+      `Invalid rpcUrl: "${overrides.rpcUrl}". Must be a non-empty URL starting with http:// or https://.`,
+    );
+  }
+
   return ok({
     ...base,
     ...(overrides.horizonUrl !== undefined && {

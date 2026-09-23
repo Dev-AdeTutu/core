@@ -1,0 +1,370 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`API Response Schema Snapshots > Account API Response Schemas > matches AccountInfo response schema 1`] = `
+{
+  "balances": [
+    {
+      "assetCode": undefined,
+      "assetIssuer": undefined,
+      "assetType": "native",
+      "balance": "1000.5000000",
+      "buyingLiabilities": "0.0000000",
+      "limit": undefined,
+      "sellingLiabilities": "0.0000000",
+    },
+    {
+      "assetCode": "USDC",
+      "assetIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      "assetType": "credit_alphanum4",
+      "balance": "250.0000000",
+      "buyingLiabilities": "0.0000000",
+      "isAuthorized": true,
+      "isClawbackEnabled": false,
+      "limit": "100000.0000000",
+      "sellingLiabilities": "0.0000000",
+    },
+  ],
+  "data": {
+    "domain": "dGVzdG5ldC5zdGVsbGFyLm9yZw==",
+  },
+  "flags": {
+    "authClawbackEnabled": false,
+    "authImmutable": false,
+    "authRequired": false,
+    "authRevocable": false,
+  },
+  "id": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+  "sequence": "123456789012345",
+  "signers": [
+    {
+      "key": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+      "type": "ed25519_public_key",
+      "weight": 1,
+    },
+  ],
+  "subentryCount": 2,
+  "thresholds": {
+    "highThreshold": 2,
+    "lowThreshold": 0,
+    "medThreshold": 1,
+  },
+}
+`;
+
+exports[`API Response Schema Snapshots > Account API Response Schemas > matches AccountsBatch response schema 1`] = `
+[
+  {
+    "balances": [
+      {
+        "assetCode": undefined,
+        "assetIssuer": undefined,
+        "assetType": "native",
+        "balance": "1000.5000000",
+        "buyingLiabilities": "0.0000000",
+        "limit": undefined,
+        "sellingLiabilities": "0.0000000",
+      },
+      {
+        "assetCode": "USDC",
+        "assetIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "assetType": "credit_alphanum4",
+        "balance": "250.0000000",
+        "buyingLiabilities": "0.0000000",
+        "isAuthorized": true,
+        "isClawbackEnabled": false,
+        "limit": "100000.0000000",
+        "sellingLiabilities": "0.0000000",
+      },
+    ],
+    "data": {
+      "domain": "dGVzdG5ldC5zdGVsbGFyLm9yZw==",
+    },
+    "flags": {
+      "authClawbackEnabled": false,
+      "authImmutable": false,
+      "authRequired": false,
+      "authRevocable": false,
+    },
+    "id": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+    "sequence": "123456789012345",
+    "signers": [
+      {
+        "key": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+        "type": "ed25519_public_key",
+        "weight": 1,
+      },
+    ],
+    "subentryCount": 2,
+    "thresholds": {
+      "highThreshold": 2,
+      "lowThreshold": 0,
+      "medThreshold": 1,
+    },
+  },
+  {
+    "balances": [
+      {
+        "assetCode": undefined,
+        "assetIssuer": undefined,
+        "assetType": "native",
+        "balance": "1000.5000000",
+        "buyingLiabilities": "0.0000000",
+        "limit": undefined,
+        "sellingLiabilities": "0.0000000",
+      },
+      {
+        "assetCode": "USDC",
+        "assetIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "assetType": "credit_alphanum4",
+        "balance": "250.0000000",
+        "buyingLiabilities": "0.0000000",
+        "isAuthorized": true,
+        "isClawbackEnabled": false,
+        "limit": "100000.0000000",
+        "sellingLiabilities": "0.0000000",
+      },
+    ],
+    "data": {
+      "domain": "dGVzdG5ldC5zdGVsbGFyLm9yZw==",
+    },
+    "flags": {
+      "authClawbackEnabled": false,
+      "authImmutable": false,
+      "authRequired": false,
+      "authRevocable": false,
+    },
+    "id": "GBXGQJWVLWOYHFLVTKWVVTJRJL6YZKXOKROVDDUBCW2STX2TM722WDOH",
+    "sequence": "987654321098765",
+    "signers": [
+      {
+        "key": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+        "type": "ed25519_public_key",
+        "weight": 1,
+      },
+    ],
+    "subentryCount": 2,
+    "thresholds": {
+      "highThreshold": 2,
+      "lowThreshold": 0,
+      "medThreshold": 1,
+    },
+  },
+]
+`;
+
+exports[`API Response Schema Snapshots > Account API Response Schemas > matches AssetBalance[] response schema 1`] = `
+[
+  {
+    "assetType": "native",
+    "balance": "1000.5000000",
+  },
+  {
+    "assetCode": "USDC",
+    "assetIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    "assetType": "credit_alphanum4",
+    "balance": "250.0000000",
+    "isAuthorized": true,
+    "limit": "100000.0000000",
+  },
+]
+`;
+
+exports[`API Response Schema Snapshots > Soroban Contract API Response Schemas > matches ContractCallResult response schema 1`] = `
+{
+  "minResourceFee": "1500",
+  "simulation": {
+    "events": [],
+    "minResourceFee": "1500",
+    "transactionData": "AAAAAAAAAAAAAA==",
+  },
+  "value": {
+    "decimals": 7,
+    "name": "USD Coin",
+    "symbol": "USDC",
+  },
+  "xdr": "AAAAEgAAAAEAAAAAAA==",
+}
+`;
+
+exports[`API Response Schema Snapshots > Soroban Contract API Response Schemas > matches ContractMethod[] response schema 1`] = `
+[
+  {
+    "docs": "Get account balance for contract",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "Address",
+      },
+    ],
+    "name": "balance",
+    "outputs": [
+      {
+        "type": "i128",
+      },
+    ],
+  },
+  {
+    "docs": "Transfer token balance between accounts",
+    "inputs": [
+      {
+        "name": "from",
+        "type": "Address",
+      },
+      {
+        "name": "to",
+        "type": "Address",
+      },
+      {
+        "name": "amount",
+        "type": "i128",
+      },
+    ],
+    "name": "transfer",
+    "outputs": [
+      {
+        "type": "Void",
+      },
+    ],
+  },
+]
+`;
+
+exports[`API Response Schema Snapshots > Soroban Contract API Response Schemas > matches PreparedContractCall response schema 1`] = `
+{
+  "assembledXdr": "AAAABAAAAAD...",
+  "builtXdr": "AAAAAgAAAAD...",
+  "minFee": "2000",
+  "simulatedXdr": "AAAAAwAAAAD...",
+  "simulation": {
+    "events": [
+      {
+        "contractId": "CCW67TSBVMGTV253TZ4E2ZHW0XB8WGA3B3DGF7T9B2J5Y65P2D0A5L1A",
+        "topics": [
+          "AAAADwAAAAR0cmFuc2Zlcg==",
+        ],
+        "type": "contract",
+        "value": "AAAAEgAAAAE=",
+      },
+    ],
+    "minResourceFee": "2000",
+    "results": [
+      {
+        "auth": [],
+        "xdr": "AAAAEgAAAAE=",
+      },
+    ],
+    "success": true,
+  },
+}
+`;
+
+exports[`API Response Schema Snapshots > Soroban Contract API Response Schemas > matches SimulateTransactionResult response schema 1`] = `
+{
+  "events": [
+    {
+      "contractId": "CCW67TSBVMGTV253TZ4E2ZHW0XB8WGA3B3DGF7T9B2J5Y65P2D0A5L1A",
+      "topics": [
+        "AAAADwAAAGluaXQ=",
+      ],
+      "type": "system",
+      "value": "AAAAEgAAAAA=",
+    },
+  ],
+  "minResourceFee": "1200",
+  "results": [
+    {
+      "auth": [],
+      "xdr": "AAAAEgAAAAE=",
+    },
+  ],
+  "success": true,
+}
+`;
+
+exports[`API Response Schema Snapshots > Transaction API Response Schemas > matches DestinationValidationResult response schema 1`] = `
+{
+  "balances": [
+    {
+      "assetType": "native",
+      "balance": "1000.5000000",
+    },
+    {
+      "assetCode": "USDC",
+      "assetIssuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      "assetType": "credit_alphanum4",
+      "balance": "250.0000000",
+      "isAuthorized": true,
+      "limit": "100000.0000000",
+    },
+  ],
+  "exists": true,
+  "issues": [],
+  "requiresMemo": false,
+  "valid": true,
+}
+`;
+
+exports[`API Response Schema Snapshots > Transaction API Response Schemas > matches ExportedTransaction response schema 1`] = `
+{
+  "amount": "100.5",
+  "asset": "XLM",
+  "date": "2026-01-20T14:30:00Z",
+  "destination": "GBXGQJWVLWOYHFLVTKWVVTJRJL6YZKXOKROVDDUBCW2STX2TM722WDOH",
+  "fee": "100",
+  "hash": "912384a5b6c7d8e9f0123456789abcdef0123456789abcdef0123456789abcdef",
+  "ledger": 5241029,
+  "memo": "Testnet Payment Memo",
+  "sourceAccount": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+  "status": "success",
+  "type": "payment",
+}
+`;
+
+exports[`API Response Schema Snapshots > Transaction API Response Schemas > matches FeeEstimate response schema 1`] = `
+{
+  "baseFee": "100",
+  "feeTiers": {
+    "high": "300",
+    "low": "100",
+    "medium": "150",
+  },
+  "isSurging": false,
+  "recommendedFee": "150",
+}
+`;
+
+exports[`API Response Schema Snapshots > Transaction API Response Schemas > matches TransactionPage response schema 1`] = `
+{
+  "nextCursor": "52410280001",
+  "transactions": [
+    {
+      "createdAt": "2026-01-20T14:30:00Z",
+      "envelopeXdr": "AAAAAgAAAAD...",
+      "fee": "100",
+      "hash": "912384a5b6c7d8e9f0123456789abcdef0123456789abcdef0123456789abcdef",
+      "ledger": 5241029,
+      "resultXdr": "AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAA=",
+      "status": "success",
+    },
+    {
+      "createdAt": "2026-01-20T14:28:00Z",
+      "fee": "100",
+      "hash": "1111111122222222333333334444444455555555666666667777777788888888",
+      "ledger": 5241028,
+      "status": "success",
+    },
+  ],
+}
+`;
+
+exports[`API Response Schema Snapshots > Transaction API Response Schemas > matches TransactionResult response schema 1`] = `
+{
+  "createdAt": "2026-01-20T14:30:00Z",
+  "envelopeXdr": "AAAAAgAAAAD...",
+  "fee": "100",
+  "hash": "912384a5b6c7d8e9f0123456789abcdef0123456789abcdef0123456789abcdef",
+  "ledger": 5241029,
+  "resultXdr": "AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAA=",
+  "status": "success",
+}
+`;

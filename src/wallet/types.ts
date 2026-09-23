@@ -21,6 +21,31 @@ export interface WalletState {
   walletType: WalletType | null;
 }
 
+export type WalletCapabilityId =
+  | "account.read"
+  | "account.multi"
+  | "account.switch"
+  | "transaction.sign"
+  | "transaction.sign_multisig"
+  | "transaction.sign_soroban"
+  | "hardware.signing"
+  | "qr.signing"
+  | (string & {});
+
+export type WalletCapabilitySource = "adapter" | "fallback";
+
+export interface WalletCapability {
+  id: WalletCapabilityId;
+  supported: boolean;
+  source: WalletCapabilitySource;
+  description?: string;
+}
+
+export interface WalletCapabilities {
+  walletType: WalletType;
+  capabilities: WalletCapability[];
+  supports(capability: string): boolean;
+}
 export interface SignTransactionInput {
   /** XDR-encoded transaction to sign */
   transactionXdr: string;
@@ -39,8 +64,12 @@ export interface SignTransactionInput {
  * - Every method returns SorokitResult<T> — no throws, no raw returns
  * - isAvailable() is the only synchronous method — it cannot fail
  * - connect() returns the public key string on success
- * - disconnect() returns void on success
+ * - disconnect() returns undefined on success
  * - signTransaction() returns the signed XDR string on success
+ *
+ * Optional methods (multi-account support):
+ * - getAccounts() returns all public keys the wallet exposes (undefined when unsupported)
+ * - setActiveAccount() switches the active account to the given public key (undefined when unsupported)
  */
 export interface WalletAdapter {
   /** Identifies which wallet this adapter handles */
@@ -53,10 +82,32 @@ export interface WalletAdapter {
   connect(): Promise<SorokitResult<string>>;
 
   /** Disconnect — state cleanup is the consumer's responsibility */
-  disconnect(): Promise<SorokitResult<void>>;
+  disconnect(): Promise<SorokitResult<undefined>>;
 
   /** Sign a transaction XDR and return the signed XDR */
   signTransaction(input: SignTransactionInput): Promise<SorokitResult<string>>;
+
+  /**
+   * Optional: declare wallet capabilities without granting permission to skip
+   * the adapter's normal runtime validation.
+   */
+  getCapabilities?(): WalletCapabilities;
+
+  /**
+   * Optional: return all public keys currently accessible from the wallet.
+   *
+   * Present when the underlying wallet / SWK version supports multi-account listing.
+   * When absent, {@link listConnectedAccounts} falls back to the single active account.
+   */
+  getAccounts?(): Promise<SorokitResult<string[]>>;
+
+  /**
+   * Optional: switch the wallet's active account to the given public key.
+   *
+   * Present when the underlying wallet / SWK version supports programmatic
+   * account switching. When absent, {@link switchAccount} returns WALLET_NOT_FOUND.
+   */
+  setActiveAccount?(accountKey: string): Promise<SorokitResult<string>>;
 }
 
 /** Outcome of a single wallet diagnostic check. */
@@ -112,6 +163,36 @@ export interface SWKInstance {
     xdr: string,
     opts: { networkPassphrase: string; address?: string },
   ): Promise<{ signedTxXdr: string }>;
+
+  /**
+   * Optional: return all accounts the wallet currently exposes.
+   * Present in SWK when the connected wallet supports multi-account listing
+   * (e.g. hardware wallets, wallets with account management UIs).
+   * When absent, {@link listConnectedAccounts} falls back to the single active account.
+   */
+  getAccounts?(): Promise<{ accounts: Array<{ address: string; name?: string }> }>;
+}
+
+/**
+ * Result returned by {@link listConnectedAccounts}.
+ * Contains all public keys currently accessible from the wallet.
+ */
+export interface ConnectedAccountsResult {
+  /** All public keys exposed by the wallet at the time of the call. */
+  accounts: string[];
+  /** The account currently active (returned by getAddress). */
+  activeAccount: string;
+}
+
+/**
+ * Result returned by {@link switchAccount}.
+ * Reflects the new wallet state after the active account is changed.
+ */
+export interface AccountSwitchResult {
+  /** The public key that is now the active account. */
+  publicKey: string;
+  /** Updated wallet connection state. */
+  walletState: WalletState;
 }
 
 /** Known wallet capability flags used for recommendation filtering. */
@@ -128,4 +209,28 @@ export interface DetectedWallet {
 export interface RecommendationCriteria {
   /** Return only wallets that support ALL of the listed features. */
   features?: WalletFeature[];
+}
+
+/**
+ * Pluggable persistence adapter for wallet state.
+ *
+ * Implementations handle serialising and restoring `WalletState` across page
+ * reloads or application restarts.  The core never touches browser storage
+ * directly — it delegates to the adapter provided in the client config.
+ *
+ * @example
+ * // localStorage adapter
+ * const adapter: PersistenceAdapter = {
+ *   save: (key, state) => localStorage.setItem(key, JSON.stringify(state)),
+ *   load: (key) => JSON.parse(localStorage.getItem(key) ?? "null"),
+ *   clear: (key) => localStorage.removeItem(key),
+ * };
+ */
+export interface PersistenceAdapter {
+  /** Persist wallet state under the given key. */
+  save(key: string, value: WalletState): void;
+  /** Load previously persisted wallet state, or `null` when absent. */
+  load(key: string): WalletState | null;
+  /** Remove persisted wallet state under the given key. */
+  clear(key: string): void;
 }

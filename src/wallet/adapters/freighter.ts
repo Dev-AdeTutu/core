@@ -19,22 +19,11 @@ import type {
 } from "../types";
 import { ok, err, SorokitErrorCode } from "../../shared/response";
 import type { SorokitResult } from "../../shared/response";
-import {
-  isBrowser,
-  isNetworkConnectivityError,
-  isTimeoutError,
-  isUserRejection,
-  toMessage,
-} from "../../shared";
+import { isBrowser, isNetworkConnectivityError, isTimeoutError, toMessage } from "../../shared";
+import { swkSignTransaction, describeSignFailure } from "./swkSign";
 
 function describeFreighterFailure(action: "connection" | "signing", cause: unknown): string {
-  if (isTimeoutError(cause)) {
-    return `Freighter ${action} timed out: ${toMessage(cause)}`;
-  }
-  if (isNetworkConnectivityError(cause)) {
-    return `Freighter ${action} failed due to network connectivity: ${toMessage(cause)}`;
-  }
-  return `Freighter ${action} failed: ${toMessage(cause)}`;
+  return describeSignFailure("Freighter", action, cause);
 }
 
 export class FreighterAdapter implements WalletAdapter {
@@ -65,7 +54,7 @@ export class FreighterAdapter implements WalletAdapter {
     }
   }
 
-  async disconnect(): Promise<SorokitResult<void>> {
+  async disconnect(): Promise<SorokitResult<undefined>> {
     // Freighter does not expose a programmatic disconnect.
     // Return success — state cleanup is the consumer's responsibility.
     return ok(undefined);
@@ -80,26 +69,6 @@ export class FreighterAdapter implements WalletAdapter {
         "Freighter requires a browser environment.",
       );
     }
-    try {
-      const { signedTxXdr } = await this.kit.signTransaction(
-        input.transactionXdr,
-        {
-          networkPassphrase: input.networkPassphrase,
-          ...(input.accountToSign !== undefined && {
-            address: input.accountToSign,
-          }),
-        },
-      );
-      return ok(signedTxXdr);
-    } catch (cause) {
-      const rejected = isUserRejection(cause);
-      return err(
-        rejected ? SorokitErrorCode.WALLET_SIGN_REJECTED : SorokitErrorCode.WALLET_SIGN_FAILED,
-        rejected
-          ? "User rejected the Freighter signature request."
-          : describeFreighterFailure("signing", cause),
-        cause,
-      );
-    }
+    return swkSignTransaction(this.kit, "Freighter", input);
   }
 }

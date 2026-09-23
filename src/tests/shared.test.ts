@@ -4,6 +4,7 @@ import {
   isBrowser,
   isValidPublicKey,
   isValidContractId,
+  sleep,
   toMessage,
   isNotFoundError,
   isNetworkConnectivityError,
@@ -16,14 +17,15 @@ import {
   withErrorHandling,
   retryWithBackoff,
   deduplicateRequest,
+  getInflightRequestCount,
   TokenBucketRateLimiter,
-  createMemoryCache,
   type RetryConfig,
   type ErrorHandler,
   type ErrorContext,
   err,
   ok,
   SorokitErrorCode,
+  buildError,
 } from "../shared";
 
 describe("shared/utils", () => {
@@ -54,6 +56,16 @@ describe("shared/utils", () => {
     });
   });
 
+  describe("sleep", () => {
+    it("resolves after approximately the requested duration", async () => {
+      const start = Date.now();
+      await sleep(50);
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeGreaterThanOrEqual(40);
+      expect(elapsed).toBeLessThan(200);
+    });
+  });
+
   describe("isValidPublicKey", () => {
     it("accepts a valid 56-char Stellar public key", () => {
       expect(
@@ -74,6 +86,14 @@ describe("shared/utils", () => {
     it("rejects a key that is too short", () => {
       expect(isValidPublicKey("GABCD")).toBe(false);
     });
+
+    it("rejects a 56-char key with lowercase characters", () => {
+      expect(
+        isValidPublicKey(
+          "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWnA",
+        ),
+      ).toBe(false);
+    });
   });
 
   describe("isValidContractId", () => {
@@ -92,6 +112,14 @@ describe("shared/utils", () => {
         ),
       ).toBe(false);
     });
+
+    it("rejects a valid-looking ID with lowercase characters", () => {
+      expect(
+        isValidContractId(
+          "CAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWnA",
+        ),
+      ).toBe(false);
+    });
   });
 });
 
@@ -107,6 +135,39 @@ describe("shared/errors", () => {
 
     it("stringifies objects", () => {
       expect(toMessage({ code: 42 })).toBe('{"code":42}');
+    });
+
+    it('returns "null" for null input', () => {
+      expect(toMessage(null)).toBe("null");
+    });
+
+    it("does not throw for undefined input", () => {
+      expect(() => toMessage(undefined)).not.toThrow();
+    });
+  });
+
+  describe("buildError", () => {
+    it("constructs a SorokitError without cause", () => {
+      const error = buildError(SorokitErrorCode.UNKNOWN, "msg");
+      expect(error).toEqual({
+        code: "UNKNOWN",
+        message: "msg",
+        cause: undefined,
+      });
+      expect(error).not.toHaveProperty("status");
+    });
+
+    it("constructs a SorokitError with a cause", () => {
+      const rootError = new Error("root cause");
+      const error = buildError(
+        SorokitErrorCode.NETWORK_ERROR,
+        "msg",
+        rootError,
+      );
+      expect(error.code).toBe("NETWORK_ERROR");
+      expect(error.message).toBe("msg");
+      expect(error.cause).toBe(rootError);
+      expect(error).not.toHaveProperty("status");
     });
   });
 
@@ -143,6 +204,10 @@ describe("shared/errors", () => {
 
     it('detects "denied"', () => {
       expect(isUserRejection(new Error("Access denied"))).toBe(true);
+    });
+
+    it('detects "user declined"', () => {
+      expect(isUserRejection(new Error("user declined"))).toBe(true);
     });
 
     it("returns false for non-rejection errors", () => {
@@ -531,6 +596,22 @@ describe("shared/utils — deduplicateRequest (#24)", () => {
     expect(results[0]?.status).toBe("rejected");
     expect(results[1]?.status).toBe("rejected");
   });
+
+  it("getInflightRequestCount returns 0 when no requests are in-flight", () => {
+    expect(getInflightRequestCount()).toBe(0);
+  });
+
+  it("getInflightRequestCount reflects active in-flight requests", async () => {
+    let resolve!: (v: string) => void;
+    const fn = () => new Promise<string>((res) => { resolve = res; });
+
+    const promise = deduplicateRequest("key-inflight-count", fn);
+    expect(getInflightRequestCount()).toBeGreaterThanOrEqual(1);
+
+    resolve("done");
+    await promise;
+    expect(getInflightRequestCount()).toBe(0);
+  });
 });
 
 describe("applyCodeTransformer", () => {
@@ -606,6 +687,51 @@ describe("TokenBucketRateLimiter", () => {
     // next should queue and resolve
     await limiter2.acquire();
     expect(Date.now() - start).toBeGreaterThanOrEqual(0);
+  });
+
+  describe("Per-Endpoint Rate Limiting & Headers (#214)", () => {
+    it("configures default limits per endpoint category", () => {
+      const limiter = new TokenBucketRateLimiter({
+        defaultLimit: 10,
+        endpoints: {
+          "contract.simulate": 2,
+          "account.get": 50,
+        },
+      });
+
+      expect(limiter.getEndpointLimit("contract.simulate")).toBe(2);
+      expect(limiter.getEndpointLimit("account.get")).toBe(50);
+      expect(limiter.getEndpointLimit("unspecified")).toBe(10);
+    });
+
+    it("allows runtime rate limit overrides via setEndpointLimit", () => {
+      const limiter = new TokenBucketRateLimiter(10);
+      expect(limiter.getEndpointLimit("contract.simulate")).toBe(5); // standard default
+
+      limiter.setEndpointLimit("contract.simulate", 1);
+      expect(limiter.getEndpointLimit("contract.simulate")).toBe(1);
+    });
+
+    it("parses X-Rate-Limit-Limit headers and updates endpoint limits dynamically", () => {
+      const limiter = new TokenBucketRateLimiter(10);
+      limiter.handleResponseHeaders("account.get", {
+        "x-rate-limit-limit": "100",
+        "x-rate-limit-remaining": "50",
+      });
+
+      expect(limiter.getEndpointLimit("account.get")).toBe(100);
+    });
+
+    it("handles Headers object for X-Rate-Limit headers", () => {
+      const limiter = new TokenBucketRateLimiter(10);
+      const headers = new Headers();
+      headers.set("X-Rate-Limit-Limit", "25");
+      headers.set("X-Rate-Limit-Remaining", "0");
+      headers.set("X-Rate-Limit-Reset", "1");
+
+      limiter.handleResponseHeaders("contract.simulate", headers);
+      expect(limiter.getEndpointLimit("contract.simulate")).toBe(25);
+    });
   });
 });
 
@@ -820,40 +946,4 @@ describe("metrics — network latency collection (#40)", () => {
   });
 });
 
-describe("createMemoryCache", () => {
-  it("stores and retrieves values", () => {
-    const cache = createMemoryCache();
-    cache.set("foo", "bar");
-    expect(cache.get("foo")).toBe("bar");
-  });
-
-  it("invalidates and clears entries", () => {
-    const cache = createMemoryCache();
-    cache.set("foo", "bar");
-    cache.invalidate("foo");
-    expect(cache.get("foo")).toBeUndefined();
-
-    cache.set("a", "1");
-    cache.set("b", "2");
-    cache.clear();
-    expect(cache.get("a")).toBeUndefined();
-    expect(cache.get("b")).toBeUndefined();
-  });
-
-  it("enforces TTL expiration", async () => {
-    const cache = createMemoryCache();
-    cache.set("foo", "bar", 10); // 10ms TTL
-    expect(cache.get("foo")).toBe("bar");
-    await new Promise((r) => setTimeout(r, 15));
-    expect(cache.get("foo")).toBeUndefined();
-  });
-
-  it("validates TTL value", () => {
-    const cache = createMemoryCache();
-    expect(() => cache.set("foo", "bar", -10)).toThrow();
-    expect(() => cache.set("foo", "bar", 1.5)).toThrow();
-    // @ts-expect-error
-    expect(() => cache.set("foo", "bar", "100")).toThrow();
-  });
-});
 

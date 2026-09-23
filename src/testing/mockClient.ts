@@ -37,7 +37,7 @@ import type { ResolvedNetworkConfig } from "../shared/types";
 // ─── Default fixtures ─────────────────────────────────────────────────────────
 
 export const MOCK_PUBLIC_KEY =
-  "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+  "GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR";
 
 export const MOCK_NETWORK_CONFIG: ResolvedNetworkConfig = {
   network: "testnet",
@@ -84,8 +84,16 @@ export const MOCK_TX_RESULT: TransactionResult = {
 
 export const MOCK_PREPARED_CALL: PreparedContractCall = {
   transactionXdr: "AAAAAQAAAA==",
-  fee: "100",
+  fee: "1000000",
 };
+
+export const MOCK_FEE_ESTIMATE = {
+  fee: "1000000",
+  feeFloat: 1000000,
+  feeXlm: "0.1000000",
+  baseFee: "100",
+  simulated: true,
+} as const;
 
 export const MOCK_SIMULATE_RESULT: SimulateTransactionResult = {
   fee: "100",
@@ -130,13 +138,30 @@ export function createMockClient(config?: MockClientConfig): SorokitClient {
   const accountInfo = config?.accountInfo ?? MOCK_ACCOUNT_INFO;
 
   return {
+    version: "0.1.0",
     networkConfig,
+    trustedIssuers: null,
+    traceId: "mock-trace-id",
+    traceContext: { traceId: "mock-trace-id", parentSpanId: null, spanId: "mock-span-id" } as any,
+    getTraceContext: vi.fn().mockReturnValue(null),
 
     wallet: {
       connect: vi.fn().mockResolvedValue(ok(MOCK_CONNECTED_WALLET_STATE)),
       disconnect: vi.fn().mockResolvedValue(ok(walletState)),
       signTransaction: vi.fn().mockResolvedValue(ok("SIGNED_XDR_MOCK==")),
       emptyState: vi.fn().mockReturnValue(ok(walletState)),
+      listConnectedAccounts: vi.fn().mockResolvedValue(
+        ok({
+          accounts: [MOCK_PUBLIC_KEY],
+          activeAccount: MOCK_PUBLIC_KEY,
+        }),
+      ),
+      switchAccount: vi.fn().mockResolvedValue(
+        ok({
+          publicKey: MOCK_PUBLIC_KEY,
+          walletState: MOCK_CONNECTED_WALLET_STATE,
+        }),
+      ),
     },
 
     account: {
@@ -144,23 +169,31 @@ export function createMockClient(config?: MockClientConfig): SorokitClient {
       getBalances: vi.fn().mockResolvedValue(ok(accountInfo.balances)),
       getAssetBalances: vi.fn().mockResolvedValue(ok(accountInfo.balances)),
       formatAddress: vi.fn().mockReturnValue(accountInfo.displayAddress),
+      isValidPublicKey: vi.fn().mockReturnValue(true),
+      isValidContractId: vi.fn().mockReturnValue(true),
+      stream: vi.fn().mockImplementation(async function* () {
+        yield ok(accountInfo);
+      }),
+      getAccountsBatch: vi.fn().mockResolvedValue(ok([ok(accountInfo)])),
+      setSponsor: vi.fn().mockReturnValue(ok({ operations: [] })),
+      removeSponsor: vi.fn().mockReturnValue(ok({ operations: [] })),
     },
 
     transaction: {
       buildPayment: vi.fn().mockResolvedValue(ok("UNSIGNED_XDR_MOCK==")),
       buildCreateAccount: vi.fn().mockResolvedValue(ok("UNSIGNED_XDR_MOCK==")),
       buildTrustline: vi.fn().mockResolvedValue(ok("UNSIGNED_XDR_MOCK==")),
+      buildAccountMerge: vi.fn().mockResolvedValue(ok("UNSIGNED_XDR_MOCK==")),
       submit: vi.fn().mockResolvedValue(ok(MOCK_TX_RESULT)),
       getStatus: vi.fn().mockResolvedValue(ok(MOCK_TX_RESULT)),
-      estimateFee: vi.fn().mockResolvedValue(
-        ok({
-          fee: "100",
-          feeFloat: 100,
-          feeXlm: "0.0000100",
-          baseFee: "100",
-          simulated: true,
-        }),
-      ),
+      estimateFee: vi.fn().mockResolvedValue(ok(MOCK_FEE_ESTIMATE)),
+      stream: vi.fn().mockImplementation(async function* () {
+        yield ok({ transactions: [MOCK_TX_RESULT], nextCursor: null });
+      }),
+      validateDestination: vi.fn().mockResolvedValue(ok({ valid: true, exists: true, isFunded: true })),
+      queryHistory: vi.fn().mockResolvedValue(ok({ transactions: [], total: 0, page: 1, pageSize: 10 })),
+      exportHistory: vi.fn().mockResolvedValue(ok("")),
+      exportTransactionHistory: vi.fn().mockResolvedValue(ok("")),
     },
 
     soroban: {
@@ -174,6 +207,7 @@ export function createMockClient(config?: MockClientConfig): SorokitClient {
 
     network: {
       getConfig: vi.fn().mockReturnValue(networkConfig),
+      getId: vi.fn().mockReturnValue(networkConfig.network),
     },
   } as unknown as SorokitClient;
 }
@@ -192,5 +226,7 @@ export function createMockWalletAdapter() {
     connect: vi.fn().mockResolvedValue(ok(MOCK_PUBLIC_KEY)),
     disconnect: vi.fn().mockResolvedValue(ok(undefined)),
     signTransaction: vi.fn().mockResolvedValue(ok("SIGNED_XDR_MOCK==")),
+    getAccounts: vi.fn().mockResolvedValue(ok([MOCK_PUBLIC_KEY])),
+    setActiveAccount: vi.fn().mockResolvedValue(ok(MOCK_PUBLIC_KEY)),
   };
 }

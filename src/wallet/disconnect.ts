@@ -1,4 +1,4 @@
-import { ok } from "../shared/response";
+import { ok, err, SorokitErrorCode } from "../shared/response";
 import type { SorokitResult } from "../shared/response";
 import type { SorokitCache } from "../shared/cache";
 import type { WalletAdapter, WalletState } from "./types";
@@ -24,6 +24,13 @@ export async function disconnectWallet(
   adapter: WalletAdapter,
   cache?: SorokitCache,
 ): Promise<SorokitResult<WalletState>> {
+  if (!adapter.isAvailable()) {
+    return err(
+      SorokitErrorCode.WALLET_BROWSER_ONLY,
+      `${adapter.walletType} requires a browser environment.`,
+    );
+  }
+
   const result = await adapter.disconnect();
   if (result.status === "error") return result;
 

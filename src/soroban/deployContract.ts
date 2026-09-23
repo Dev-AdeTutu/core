@@ -18,6 +18,8 @@ import {
 import { DEFAULT_TX_TIMEOUT_SECONDS } from "../shared/constants";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import type { PreparedContractCall } from "./types";
+import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
+import { validateDeployConfig } from "./validateDeployConfig";
 
 const MAX_WASM_SIZE = 256 * 1024; // 256 KB
 
@@ -28,11 +30,47 @@ export interface BuildContractDeployOptions {
   salt?: Buffer;
 }
 
+/**
+ * Build a contract deployment transaction (upload WASM + create contract).
+ *
+ * The configuration is validated before any network call, so a missing endpoint,
+ * an unresolved network config, or a malformed deployer address returns
+ * `INVALID_CONFIG` naming each offending field and its fix instead of surfacing
+ * later as an opaque RPC or Horizon failure. Valid configurations follow exactly
+ * the same path as before.
+ *
+ * @param contractCode - Compiled contract WASM
+ * @param deployer - Stellar public key (G...) funding and owning the deployment
+ * @param options - RPC/Horizon endpoints, resolved network config, optional salt
+ * @returns Assembled deployment XDR and fee, or a descriptive error
+ *
+ * @see validateDeployConfig — run the same checks from a deployment script
+ */
 export async function buildContractDeploy(
   contractCode: Buffer,
   deployer: string,
   options: BuildContractDeployOptions
 ): Promise<SorokitResult<PreparedContractCall>> {
+  // Validate configuration before any network call so missing or malformed
+  // values are reported as actionable errors instead of opaque RPC failures.
+  const configResult = validateDeployConfig({
+    rpcUrl: options?.rpcUrl,
+    horizonUrl: options?.horizonUrl,
+    networkConfig: options?.networkConfig,
+    deployer,
+    salt: options?.salt,
+  });
+  if (configResult.status === "error") return configResult;
+
+  // Validate WASM presence — callers without type checking can reach here with
+  // an unread or empty file buffer.
+  if (!Buffer.isBuffer(contractCode) || contractCode.length === 0) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "Contract WASM is missing or empty. Pass the compiled .wasm file contents as a Buffer (e.g. fs.readFileSync(wasmPath))."
+    );
+  }
+
   // Validate WASM size
   if (contractCode.length > MAX_WASM_SIZE) {
     return err(
@@ -56,7 +94,7 @@ export async function buildContractDeploy(
   }
 
   try {
-    const rpc = new SorobanRpc.Server(options.rpcUrl);
+    const rpc = createSorobanServer(options.rpcUrl);
     const horizonServer = new Horizon.Server(options.horizonUrl);
 
     // Get deployer account for sequence number

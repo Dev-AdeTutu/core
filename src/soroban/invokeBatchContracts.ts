@@ -15,6 +15,7 @@ function toInvokeParams(
     ...(inv.args !== undefined && { args: inv.args }),
     ...(inv.cachedMetadata !== undefined && { cachedMetadata: inv.cachedMetadata }),
     ...(inv.contractAbi !== undefined && { contractAbi: inv.contractAbi }),
+    ...(inv.stateTracker !== undefined && { stateTracker: inv.stateTracker }),
   };
 }
 

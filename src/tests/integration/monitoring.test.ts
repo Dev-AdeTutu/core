@@ -41,7 +41,8 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const TEST_PUBLIC_KEY = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA";
+const TEST_PUBLIC_KEY =
+  "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA";
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 
 function makeHorizonAccount(balance = "10.0000000") {
@@ -71,7 +72,11 @@ function makeHorizonAccount(balance = "10.0000000") {
   };
 }
 
-function makeHorizonTxRecord(hash: string, successful: boolean, pagingToken: string) {
+function makeHorizonTxRecord(
+  hash: string,
+  successful: boolean,
+  pagingToken: string,
+) {
   return {
     hash,
     successful,
@@ -90,6 +95,11 @@ describe("integration: account streaming", () => {
   beforeEach(() => {
     mockLoadAccount.mockReset();
     mockTransactionsCall.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
   });
 
   it("yields account state on the first poll", async () => {
@@ -131,8 +141,12 @@ describe("integration: account streaming", () => {
     expect(results[1]?.status).toBe("ok");
 
     if (results[0]?.status === "ok" && results[1]?.status === "ok") {
-      const balance0 = results[0].data.balances.find((b) => b.assetCode === "XLM");
-      const balance1 = results[1].data.balances.find((b) => b.assetCode === "XLM");
+      const balance0 = results[0].data.balances.find(
+        (b) => b.assetCode === "XLM",
+      );
+      const balance1 = results[1].data.balances.find(
+        (b) => b.assetCode === "XLM",
+      );
       expect(balance0?.balance).toBe("10.0000000");
       expect(balance1?.balance).toBe("8.0000000");
     }
@@ -142,7 +156,12 @@ describe("integration: account streaming", () => {
     mockLoadAccount.mockResolvedValue(makeHorizonAccount());
 
     const controller = new AbortController();
-    const stream = streamAccount(HORIZON_URL, TEST_PUBLIC_KEY, { intervalMs: 50 }, controller.signal);
+    const stream = streamAccount(
+      HORIZON_URL,
+      TEST_PUBLIC_KEY,
+      { intervalMs: 50 },
+      controller.signal,
+    );
 
     // Collect the first result then abort
     const firstResult = await stream.next();
@@ -174,6 +193,11 @@ describe("integration: transaction monitoring", () => {
     mockTransactionsCall.mockReset();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
   it("yields a page of transactions on the first poll", async () => {
     mockTransactionsCall.mockResolvedValueOnce({
       records: [
@@ -182,7 +206,9 @@ describe("integration: transaction monitoring", () => {
       ],
     });
 
-    const stream = streamTransactions(HORIZON_URL, TEST_PUBLIC_KEY, { maxPolls: 1 });
+    const stream = streamTransactions(HORIZON_URL, TEST_PUBLIC_KEY, {
+      maxPolls: 1,
+    });
     const { value } = await stream.next();
 
     expect(value?.status).toBe("ok");
@@ -226,7 +252,10 @@ describe("integration: transaction monitoring", () => {
         records: [makeHorizonTxRecord("tx_2", true, "cursor_b")],
       });
 
-    const stream = streamTransactions(HORIZON_URL, TEST_PUBLIC_KEY, { maxPolls: 2, intervalMs: 10 });
+    const stream = streamTransactions(HORIZON_URL, TEST_PUBLIC_KEY, {
+      maxPolls: 2,
+      intervalMs: 10,
+    });
 
     const results = [];
     for await (const result of stream) {
@@ -248,7 +277,9 @@ describe("integration: transaction monitoring", () => {
     const clientResult = createSorokitClient({ network: "testnet" });
     if (clientResult.status !== "ok") return;
 
-    const stream = clientResult.data.transaction.stream(TEST_PUBLIC_KEY, { maxPolls: 1 });
+    const stream = clientResult.data.transaction.stream(TEST_PUBLIC_KEY, {
+      maxPolls: 1,
+    });
     const { value } = await stream.next();
 
     expect(value?.status).toBe("ok");

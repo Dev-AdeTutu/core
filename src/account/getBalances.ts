@@ -23,8 +23,9 @@ import { getAccount } from "./getAccount";
 export async function getBalances(
   horizonUrl: string,
   publicKey: string,
+  options?: { signal?: AbortSignal | undefined },
 ): Promise<SorokitResult<AssetBalance[]>> {
-  const result = await getAccount(horizonUrl, publicKey);
+  const result = await getAccount(horizonUrl, publicKey, options);
   if (result.status === "error") return result;
   return ok(result.data.balances);
 }

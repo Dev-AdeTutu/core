@@ -46,9 +46,13 @@ It is deliberately stateless and framework-agnostic. It runs in Node, the browse
   - [soroban](#soroban)
 - [Result Type](#result-type)
 - [Wallet Adapters](#wallet-adapters)
+- [Network Management](#network-management)
 - [Streaming](#streaming)
 - [Networks](#networks)
 - [Testing Utilities](#testing-utilities)
+- [Examples](#examples)
+- [Workflow and Architecture Guides](#workflow-and-architecture-guides)
+- [New in This Release](#new-in-this-release)
 - [Design Principles](#design-principles)
 - [License](#license)
 
@@ -110,13 +114,14 @@ if (tx.status === "ok") {
 
 ## Modules
 
-| Module        | Responsibility                                                        |
-| ------------- | --------------------------------------------------------------------- |
-| `wallet`      | Connect and disconnect wallets, sign transactions via SWK adapters    |
-| `account`     | Fetch account info, balances, and stream account state                |
-| `transaction` | Build, submit, and track transactions; estimate fees; stream activity |
-| `soroban`     | Read and invoke Soroban smart contracts                               |
-| `network`     | Network configuration for mainnet, testnet, and futurenet             |
+| Module        | Responsibility                                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------- |
+| `wallet`      | Connect/disconnect wallets, sign transactions, offline signing, wallet status tracking                        |
+| `account`     | Fetch account info, balances, stream state, balance alerts, activity summaries, key rotation, sponsorship     |
+| `transaction` | Build/submit/track transactions, fee estimation, multi-sig support, path payments, history export, webhooks   |
+| `soroban`     | Read/invoke contracts, simulate transactions, contract interaction builder, event decoding, deploy validation |
+| `network`     | Network configuration, circuit breaker, dynamic network switching, network resolution                         |
+| `shared`      | Logging, tracing, caching, configuration, validation, server factory                                          |
 
 ---
 
@@ -147,6 +152,21 @@ client.account.getAssetBalances(publicKey, {
   excludeZero: true,
 }); // → SorokitResult<AssetBalance[]>
 
+// Get account activity summary (new)
+client.account.getAccountActivitySummary(publicKey); // → SorokitResult<ActivitySummary>
+
+// Create balance alerts (new)
+client.account.createBalanceAlert(publicKey, {
+  minBalance: "100",
+  onAlert: (balance) => console.log("Low balance alert"),
+});
+
+// Rotate account keys (new)
+client.account.rotateKey(publicKey, params); // → SorokitResult<Transaction>
+
+// Manage account sponsorship (new)
+client.account.sponsorAccount(publicKey, sponsorKey); // → SorokitResult<Transaction>
+
 // Poll Horizon and stream account state changes
 for await (const result of client.account.stream(publicKey)) {
   if (result.status === "ok") console.log(result.data.balances);
@@ -160,6 +180,12 @@ for await (const result of client.account.stream(publicKey)) {
 client.transaction.buildPayment(sourceKey, params); // → SorokitResult<string>
 client.transaction.buildCreateAccount(sourceKey, params); // → SorokitResult<string>
 client.transaction.buildTrustline(sourceKey, params); // → SorokitResult<string>
+
+// Build multi-signature transactions (new)
+client.transaction.buildMultiSigTransaction(sourceKey, params); // → SorokitResult<string>
+
+// Build path payments (new)
+client.transaction.buildPathPayment(sourceKey, params); // → SorokitResult<string>
 
 // Submit and query
 client.transaction.submit(signedXdr); // → SorokitResult<TransactionResult>
@@ -176,6 +202,21 @@ client.transaction.estimateFee({
   amount: "10",
 }); // → SorokitResult<FeeEstimate>
 
+// Get fee analytics (new)
+client.transaction.getFeeAnalytics(params); // → SorokitResult<FeeAnalytics>
+
+// Query transaction history (new)
+client.transaction.queryTransactionHistory(publicKey, { limit: 50 }); // → SorokitResult<Transaction[]>
+
+// Export transaction history (new)
+client.transaction.exportTransactionHistory(publicKey, format); // → SorokitResult<string>
+
+// Validate destination (new)
+client.transaction.validateDestination("GDEST..."); // → SorokitResult<boolean>
+
+// Validate transaction offline (new)
+client.transaction.validateTransactionOffline(transactionXdr); // → SorokitResult<ValidationResult>
+
 // Stream transactions for an account
 for await (const result of client.transaction.stream(publicKey)) {
   if (result.status === "ok") console.log(result.data.transactions);
@@ -190,10 +231,69 @@ client.soroban.prepare(params)                  // → SorokitResult<PreparedCon
 client.soroban.execute(signedXdr)               // → SorokitResult<string> (tx hash)
 client.soroban.read(params)                     // → SorokitResult<ContractCallResult>
 
+// Contract interaction builder (new)
+const builder = new ContractInteractionBuilder(client, contractId);
+builder
+  .method('transfer')
+  .arg('to', destination)
+  .arg('amount', amount)
+  .build();
+
+// Contract state tracking (new)
+client.soroban.trackContractState(contractId, keys); // → AsyncGenerator
+
+// Decode contract events (new)
+client.soroban.decodeContractEvent(event); // → DecodedEvent | null
+
+// Get contract call identity (new)
+client.soroban.getCallIdentity(contractId); // → SorokitResult<ContractIdentity>
+
+// Parse contract results (new)
+client.soroban.parseContractResult(result); // → SorokitResult<ParsedResult>
+
+// Simulate before execution (new)
+client.soroban.simulator.simulate(transaction); // → SorokitResult<SimulationResult>
+
+// Get factory statistics (new)
+client.soroban.getFactoryStatistics(factoryId); // → SorokitResult<FactoryStats>
+
 // Full invoke pipeline: prepare → sign → execute in one call
 client.soroban.invoke(params, (xdr) =>
   adapter.signTransaction({ transactionXdr: xdr, ... })
 )
+```
+
+#### Contract deployment
+
+`buildContractDeploy` validates its configuration before any network call, so a
+missing endpoint or a malformed deployer address fails immediately with an
+`INVALID_CONFIG` error naming every offending field and how to fix it. Call the
+same check directly from a deployment script to fail before you spend a build:
+
+```ts
+import { validateDeployConfig, collectDeployConfigIssues } from "sorokit-core";
+
+const check = validateDeployConfig({
+  rpcUrl,
+  horizonUrl,
+  networkConfig,
+  deployer,
+});
+if (check.status === "error") {
+  console.error(check.error.message);
+  // Deployment configuration is invalid — 2 problems found:
+  //   1. rpcUrl — rpcUrl is missing. Fix: Set rpcUrl to the Soroban RPC endpoint …
+  //   2. deployer — deployer is not a valid Stellar public key: "GNOPE". Fix: …
+  process.exit(1);
+}
+
+// Or render the issues yourself — each has { field, reason, hint }
+const issues = collectDeployConfigIssues({
+  rpcUrl,
+  horizonUrl,
+  networkConfig,
+  deployer,
+});
 ```
 
 ---
@@ -226,17 +326,61 @@ This pattern means you handle errors where they happen, without wrapping everyth
 
 ## Wallet Adapters
 
-Three adapters ship with `sorokit-core`. All require a [Stellar Wallets Kit](https://github.com/creit-tech/stellar-wallets-kit) instance initialised separately:
+Four adapters ship with `sorokit-core`. All require a [Stellar Wallets Kit](https://github.com/creit-tech/stellar-wallets-kit) instance initialised separately:
 
 ```ts
-import { FreighterAdapter, XBullAdapter, LobstrAdapter } from "sorokit-core";
+import {
+  FreighterAdapter,
+  XBullAdapter,
+  LobstrAdapter,
+  HanaAdapter,
+  SWKSignAdapter,
+} from "sorokit-core";
 
 const adapter = new FreighterAdapter(swkInstance);
 const adapter = new XBullAdapter(swkInstance);
 const adapter = new LobstrAdapter(swkInstance);
+const adapter = new HanaAdapter(swkInstance); // NEW
+const adapter = new SWKSignAdapter(swkInstance); // NEW
 ```
 
+**New Features:**
+
+- `HanaAdapter` - Support for Hana wallet integration
+- `SWKSignAdapter` - Custom SWK-based signing adapter
+- `signTransactionOffline()` - Sign transactions without wallet connection (NEW)
+- `walletStatusTracker` - Real-time wallet connection monitoring (NEW)
+
 Pass the adapter to `client.wallet.connect()` and `client.wallet.signTransaction()`. The adapter is the only stateful object in the system — the client itself remains stateless.
+
+---
+
+## Network Management
+
+The SDK now includes circuit breaker and dynamic network switching:
+
+```ts
+// Circuit breaker for resilience (automatic)
+const client = createSorokitClient({
+  network: "testnet",
+  enableCircuitBreaker: true, // Retries failed requests intelligently
+});
+
+// Dynamic network switching (new)
+client.network.switchNetwork("mainnet"); // Switch at runtime
+
+// Network resolution (new)
+const resolved = await client.network.resolveNetwork("testnet");
+if (resolved.status === "ok") {
+  console.log(resolved.data.horizonUrl, resolved.data.rpcUrl);
+}
+```
+
+**Features:**
+
+- `circuitBreaker` - Automatic retry logic with exponential backoff
+- `networkSwitcher` - Switch between networks without recreating client
+- `resolveNetwork` - Programmatic network endpoint resolution
 
 ---
 
@@ -320,12 +464,100 @@ const adapter = createMockWalletAdapter();
 
 ---
 
+## Examples
+
+| Example                                        | Shows                                                                                                           |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| [`examples/router-swap`](examples/router-swap) | Frontend router integration: quote → swap → transaction tracking, with wallet signing and router error handling |
+
+Examples are type-checked against the SDK source with `npm run typecheck:examples`.
+
+---
+
+## New in This Release
+
+### Major Features
+
+- ✅ **Circuit Breaker** - Automatic resilience for failed network requests
+- ✅ **Dynamic Network Switching** - Change networks without recreating the client
+- ✅ **Transaction Simulation** - Test transactions before sending (simulator module)
+- ✅ **Contract Interaction Builder** - Fluent API for complex contract calls
+- ✅ **Event Decoding** - Programmatic contract event parsing
+- ✅ **Deploy Validation** - Pre-flight validation for contract deployments with actionable error messages
+- ✅ **Offline Signing** - Sign transactions without wallet connection
+- ✅ **Multi-Signature Support** - Build and manage multi-sig transactions
+- ✅ **Path Payments** - Advanced path payment calculations
+- ✅ **Transaction History** - Export and query historical transactions with flexible formats
+- ✅ **Wallet Adapters** - Hana and SWK signing adapters for extended wallet support
+- ✅ **Balance Alerts** - Monitor account balance changes in real-time
+- ✅ **Activity Summaries** - Aggregate account activity metrics and analytics
+- ✅ **Key Rotation** - Rotate account keys securely
+- ✅ **Sponsorship** - Manage account sponsorships
+- ✅ **Distributed Tracing** - Debug transactions and calls with detailed tracing
+- ✅ **Advanced Logging** - Structured logging with multiple levels and configurable output
+- ✅ **Configuration Management** - Centralized config validation with per-field guidance
+
+### Testing Enhancements
+
+- 30+ new test files with comprehensive coverage
+- Property-based testing for transaction building
+- Router integration tests with real-world scenarios
+- Network resilience and circuit breaker tests
+- Contract deployment validation tests
+
+### Performance
+
+- Bundle size tracking with 50 KB gzipped budget
+- Optimized network calls with circuit breaker
+- Efficient contract state tracking
+- Reduced memory footprint with streaming
+
+---
+
 ## Contributing
 
 Pull requests are welcome. For significant changes, please open an issue first to discuss what you'd like to change.
 
 ---
 
+## Workflow and Architecture Guides
+
+The documentation now includes task-oriented, executable workflows and a contributor-facing architecture guide:
+
+| Guide | Use it for |
+| --- | --- |
+| [`docs/workflows.md`](docs/workflows.md) | Complete transaction lifecycle, wallet signing, multisignature signing, Soroban calls, trustline approval, cost planning, refunds, and recovery patterns |
+| [`docs/architecture.md`](docs/architecture.md) | Module boundaries, data flow, result/error conventions, extension guidance, and migration from direct Stellar SDK usage |
+
+Both guides use the current exported API shape and keep policy, construction, signing, submission, and recovery concerns separate.
+
+---
+
 ## License
 
 [MIT](LICENSE)
+
+# Factory statistics
+
+API servers can expose `getFactoryStatistics` at a route such as
+`GET /factory/:id/statistics`. Supply an adapter that reads the factory pair
+count and deployment metadata; the function returns Sorokit's standard
+structured JSON result.
+
+# Decode factory and router events
+
+```ts
+import { decodeContractEvent, queryContractEvents } from "sorokit-core";
+
+const events = await queryContractEvents(factoryId, undefined, { horizonUrl });
+for (const event of events) {
+  const decoded = decodeContractEvent(event);
+  if (decoded?.type === "factory.pair_created") {
+    console.log(decoded.data);
+  }
+}
+```
+
+Pass custom decoders as the second argument to support application-specific
+events. Custom decoders run first, so adding new built-in event types remains
+backward-compatible.

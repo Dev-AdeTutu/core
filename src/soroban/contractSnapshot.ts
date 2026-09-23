@@ -2,6 +2,7 @@ import { Contract, rpc as SorobanRpc } from "@stellar/stellar-sdk";
 import { ok, err, SorokitErrorCode } from "../shared/response";
 import type { SorokitResult } from "../shared/response";
 import { toMessage } from "../shared";
+import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
 
 export interface ContractSnapshot {
   /** Unique snapshot identifier */
@@ -107,9 +108,9 @@ export async function snapshotContractState(
   const id = `${contractId.slice(0, 8)}-${Date.now()}`;
 
   try {
-    const rpc = new SorobanRpc.Server(rpcUrl);
+    const rpc = createSorobanServer(rpcUrl);
     const contract = new Contract(contractId);
-    const instanceResult = await rpc.getLedgerEntries(contract.getFootprint());
+    const instanceResult = await rpc.getLedgerEntries(contract.getFootprint() as any);
     const instanceEntry = instanceResult.entries[0];
 
     const state: Record<string, unknown> = instanceEntry

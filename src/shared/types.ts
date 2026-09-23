@@ -9,8 +9,30 @@
  */
 
 export type { SorokitResult, SorokitError, SorokitErrorCode } from "./response";
-export type { SorokitLogger, LogLevel, LoggerConfig } from "./logger";
+export type {
+  LogLevel,
+  LoggerOptions,
+  LogTransport,
+  SorokitLogger,
+  StructuredLogRecord,
+} from "./logger";
 export type { SorokitCache } from "./cache";
+
+export type PriceFeedStatus = "fresh" | "stale" | "unavailable" | "invalid";
+
+export interface AssetPrice {
+  asset: string;
+  price: number;
+  currency: string;
+  provider: string;
+  timestamp: string;
+  status: PriceFeedStatus;
+}
+
+export interface PriceFeed {
+  readonly name: string;
+  getPrice(asset: string, currency?: string): Promise<AssetPrice | null>;
+}
 
 /**
  * The resolved network configuration shape.

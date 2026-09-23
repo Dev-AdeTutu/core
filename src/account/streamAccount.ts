@@ -5,6 +5,12 @@ import type { SorokitLogger } from "../shared/logger";
 import type { AccountInfo, BalanceAlert, BalanceAlertRule } from "./types";
 import { getAccount } from "./getAccount";
 import { evaluateBalanceAlerts } from "./balanceAlerts";
+import {
+  retryStreamingPoll,
+  type StreamingRetryState,
+  type StreamingRetryConfig,
+} from "../shared/utils";
+import { isTransientError } from "../shared/errors";
 
 const MIN_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -17,6 +23,10 @@ function sameSnapshot(a: unknown, b: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+function getLatencyCompensatedDelay(intervalMs: number, requestDurationMs: number): number {
+  return Math.max(MIN_POLL_INTERVAL_MS, intervalMs - requestDurationMs);
 }
 
 /**
@@ -54,11 +64,21 @@ export interface AccountStreamConfig {
    */
   emitOnStart?: boolean;
   /**
+   * Optional callback fired when a new asset balance is added to the account.
+   * Receives the asset details (code, issuer), the new balance string, and the delta.
+   */
+  onBalanceAdd?: (asset: { code: string; issuer?: string }, newBalance: string, delta: string) => void;
+  /**
+   * Optional callback fired when an asset balance is removed from the account.
+   * Receives the asset details (code, issuer), the old balance string, and the delta.
+   */
+  onBalanceRemove?: (asset: { code: string; issuer?: string }, oldBalance: string, delta: string) => void;
+  /**
    * Optional callback fired when a specific asset balance changes between polls.
-   * Receives the asset code, the previous balance string, and the new balance string.
+   * Receives the asset details (code, issuer), the old balance string, the new balance string, and the delta.
    * Only fires when the balance actually changes — unchanged balances are silent.
    */
-  onBalanceChange?: (assetCode: string, oldBalance: string, newBalance: string) => void;
+  onBalanceChange?: (asset: { code: string; issuer?: string }, oldBalance: string, newBalance: string, delta: string) => void;
   /**
    * Optional balance alert rules evaluated on every successful poll.
    * Each rule fires an alert via {@link onAlert} when its threshold is crossed.
@@ -67,9 +87,17 @@ export interface AccountStreamConfig {
   alertRules?: BalanceAlertRule[];
   /**
    * Optional callback fired for each {@link BalanceAlert} produced by {@link alertRules}.
-   * Fired after `onBalanceChange` for the same poll.
+   * Fired after balance event callbacks for the same poll.
    */
   onAlert?: (alert: BalanceAlert) => void;
+  /**
+   * Enable automatic retry with exponential backoff for transient network errors.
+   * When enabled, transient errors (timeouts, network issues, 5xx) trigger automatic
+   * retry with exponential backoff (1s, 2s, 4s, 8s, 16s, then 30s max). After 5 consecutive
+   * failures, an error is emitted and polling pauses for 60s before resuming.
+   * Default: true.
+   */
+  enableAutoRetry?: boolean;
 }
 
 /**
@@ -111,10 +139,16 @@ export async function* streamAccount(
   signal?: AbortSignal,
   logger?: SorokitLogger,
 ): AsyncGenerator<SorokitResult<AccountInfo>> {
-  const baseIntervalMs = Math.max(
-    config?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS,
-    MIN_POLL_INTERVAL_MS,
-  );
+  const requestedInterval = config?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  if (requestedInterval < MIN_POLL_INTERVAL_MS) {
+    const msg = `intervalMs clamped from ${requestedInterval}ms to ${MIN_POLL_INTERVAL_MS}ms`;
+    if (logger) {
+      logger.warn(msg, { operation: "account.stream" });
+    } else {
+      console.warn(msg);
+    }
+  }
+  const baseIntervalMs = Math.max(requestedInterval, MIN_POLL_INTERVAL_MS);
   const adaptiveEnabled =
     config?.minIntervalMs !== undefined ||
     config?.maxIntervalMs !== undefined ||
@@ -131,12 +165,22 @@ export async function* streamAccount(
   const maxPolls = config?.maxPolls;
   const emitOnStart = config?.emitOnStart ?? true;
 
+  // Retry configuration
+  const retryConfig: StreamingRetryConfig = {
+    enabled: config?.enableAutoRetry ?? true,
+  };
+  let retryState: StreamingRetryState = {
+    consecutiveFailures: 0,
+    inCooldown: false,
+  };
+
   let polls = 0;
   let currentIntervalMs = Math.min(
     Math.max(baseIntervalMs, minIntervalMs),
     maxIntervalMs,
   );
   let unchangedPolls = 0;
+  let nextDelayMs = currentIntervalMs;
   const adjustInterval = (changed: boolean): void => {
     if (!adaptiveEnabled) return;
 
@@ -185,7 +229,7 @@ export async function* streamAccount(
     // Skip the initial sleep when emitOnStart is true
     if (polls > 0 || !emitOnStart) {
       try {
-        await sleep(currentIntervalMs);
+        await sleep(nextDelayMs);
       } catch {
         return;
       }
@@ -193,6 +237,10 @@ export async function* streamAccount(
 
     if (signal?.aborted) return;
 
+    const pollStartedAt = Date.now();
+    let pollSuccess = false;
+    let errorResult: SorokitResult<AccountInfo> | null = null;
+    
     try {
       logger?.debug("account.stream.poll", {
         operation: "account.stream.poll",
@@ -211,15 +259,50 @@ export async function* streamAccount(
           poll: polls + 1,
         });
 
-        // Fire onBalanceChange for any balance that changed since the last successful poll.
-        if (lastEmitted && config?.onBalanceChange) {
-          for (const newBal of result.data.balances) {
-            const key = `${newBal.assetCode}:${newBal.assetIssuer ?? ""}`;
-            const oldBal = lastEmitted.balances.find(
-              (b) => `${b.assetCode}:${b.assetIssuer ?? ""}` === key,
-            );
-            if (oldBal && oldBal.balance !== newBal.balance) {
-              config.onBalanceChange(newBal.assetCode, oldBal.balance, newBal.balance);
+        // Fire balance event callbacks for add/remove/change events
+        if (lastEmitted) {
+          const oldBalancesMap = new Map(
+            lastEmitted.balances.map((b) => [`${b.assetCode}:${b.assetIssuer ?? ""}`, b])
+          );
+          const newBalancesMap = new Map(
+            result.data.balances.map((b) => [`${b.assetCode}:${b.assetIssuer ?? ""}`, b])
+          );
+
+          // Detect added balances
+          if (config?.onBalanceAdd) {
+            for (const [key, newBal] of newBalancesMap) {
+              if (!oldBalancesMap.has(key)) {
+                const asset: { code: string; issuer?: string } = { code: newBal.assetCode };
+                if (newBal.assetIssuer) asset.issuer = newBal.assetIssuer;
+                config.onBalanceAdd(asset, newBal.balance, newBal.balance);
+              }
+            }
+          }
+
+          // Detect removed balances
+          if (config?.onBalanceRemove) {
+            for (const [key, oldBal] of oldBalancesMap) {
+              if (!newBalancesMap.has(key)) {
+                const asset: { code: string; issuer?: string } = { code: oldBal.assetCode };
+                if (oldBal.assetIssuer) asset.issuer = oldBal.assetIssuer;
+                config.onBalanceRemove(asset, oldBal.balance, `-${oldBal.balance}`);
+              }
+            }
+          }
+
+          // Detect changed balances
+          if (config?.onBalanceChange) {
+            for (const [key, newBal] of newBalancesMap) {
+              const oldBal = oldBalancesMap.get(key);
+              if (oldBal && oldBal.balance !== newBal.balance) {
+                const asset: { code: string; issuer?: string } = { code: newBal.assetCode };
+                if (newBal.assetIssuer) asset.issuer = newBal.assetIssuer;
+                // Calculate delta as a string (new - old)
+                const oldNum = parseFloat(oldBal.balance);
+                const newNum = parseFloat(newBal.balance);
+                const delta = (newNum - oldNum).toString();
+                config.onBalanceChange(asset, oldBal.balance, newBal.balance, delta);
+              }
             }
           }
         }
@@ -237,6 +320,8 @@ export async function* streamAccount(
           for (const alert of alerts) config.onAlert(alert);
         }
 
+        pollSuccess = true;
+
       } else {
         logger?.warn("account.stream.poll", {
           operation: "account.stream.poll",
@@ -246,6 +331,8 @@ export async function* streamAccount(
           errorCode: result.error.code,
           errorMessage: result.error.message,
         });
+        
+        errorResult = result;
       }
 
       if (result.status === "ok") {
@@ -259,7 +346,6 @@ export async function* streamAccount(
         }
       } else {
         adjustInterval(false);
-        yield result;
       }
     } catch (cause) {
       const message = `Account stream poll failed: ${toMessage(cause)}`;
@@ -270,7 +356,52 @@ export async function* streamAccount(
         poll: polls + 1,
         errorMessage: message,
       });
-      yield err(SorokitErrorCode.ACCOUNT_FETCH_FAILED, message, cause);
+      
+      errorResult = err(SorokitErrorCode.ACCOUNT_FETCH_FAILED, message, cause);
+    }
+
+    // Handle retry logic after poll attempt
+    const isTransient = errorResult && errorResult.error ? isTransientError(errorResult.error.cause || errorResult.error) : false;
+    const retryDecision = retryStreamingPoll(
+      pollSuccess,
+      retryState,
+      retryConfig,
+    );
+    retryState = retryDecision.updatedState;
+
+    // Determine if we should yield the error
+    // Yield error if: not a transient error, or we're in cooldown, or auto-retry is disabled
+    const shouldYieldError = errorResult && 
+      (!isTransient || !retryDecision.shouldRetry || retryState.inCooldown);
+
+    // Yield error if needed
+    if (shouldYieldError && errorResult) {
+      yield errorResult;
+    }
+
+    // Calculate next delay
+    if (retryDecision.shouldRetry && isTransient && !retryState.inCooldown) {
+      nextDelayMs = retryDecision.delayMs;
+      logger?.debug("account.stream.retry", {
+        operation: "account.stream.retry",
+        status: "retrying",
+        publicKey,
+        consecutiveFailures: retryState.consecutiveFailures,
+        delayMs: nextDelayMs,
+      });
+    } else if (retryState.inCooldown) {
+      nextDelayMs = retryDecision.delayMs;
+      logger?.debug("account.stream.retry", {
+        operation: "account.stream.retry",
+        status: "cooldown",
+        publicKey,
+        delayMs: nextDelayMs,
+      });
+    } else {
+      nextDelayMs = getLatencyCompensatedDelay(
+        currentIntervalMs,
+        Date.now() - pollStartedAt,
+      );
     }
 
     polls++;

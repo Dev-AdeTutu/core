@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sorokit-core — router swap example</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 34rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      fieldset {
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        margin-bottom: 1rem;
+      }
+      label {
+        display: block;
+        margin: 0.5rem 0;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 0.4rem;
+        box-sizing: border-box;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        margin-right: 0.5rem;
+      }
+      #quote,
+      #status {
+        margin-top: 1rem;
+        padding: 0.75rem;
+        border-radius: 6px;
+        word-break: break-word;
+      }
+      #quote {
+        background: #f4f4f5;
+      }
+      .info {
+        background: #eef6ff;
+      }
+      .error {
+        background: #fdecec;
+        color: #8a1c1c;
+      }
+      code {
+        background: #f4f4f5;
+        padding: 0.1rem 0.3rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Router swap</h1>
+    <p>
+      Minimal reference for quoting and executing a swap with
+      <code>sorokit-core</code> on testnet. Connect a wallet, request a quote,
+      then submit the swap.
+    </p>
+
+    <button id="connect" type="button">Connect wallet</button>
+    <span id="account"></span>
+
+    <form id="swap-form">
+      <fieldset>
+        <legend>Sell</legend>
+        <label>
+          Asset code
+          <input name="sendCode" value="XLM" required />
+        </label>
+        <label>
+          Issuer (leave empty for native XLM)
+          <input name="sendIssuer" placeholder="G..." />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Buy</legend>
+        <label>
+          Asset code
+          <input name="receiveCode" value="USDC" required />
+        </label>
+        <label>
+          Issuer
+          <input
+            name="receiveIssuer"
+            placeholder="GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+          />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Swap</legend>
+        <label>
+          Mode
+          <select name="mode">
+            <option value="strict-send">Strict send (spend exactly)</option>
+            <option value="strict-receive">
+              Strict receive (receive exactly)
+            </option>
+          </select>
+        </label>
+        <label>
+          Amount
+          <input name="amount" value="100" required />
+        </label>
+        <label>
+          Slippage tolerance (%)
+          <input name="slippage" value="0.5" />
+        </label>
+        <label>
+          Destination (leave empty to swap into your own account)
+          <input name="destination" placeholder="G..." />
+        </label>
+      </fieldset>
+
+      <button type="submit">Get quote</button>
+      <button id="swap" type="button" disabled>Swap</button>
+    </form>
+
+    <div id="quote"></div>
+    <div id="status" class="info">Connect a wallet to begin.</div>
+
+    <!-- Bundle src/app.ts with your bundler of choice; see README.md. -->
+    <script type="module" src="./dist/app.js"></script>
+  </body>
+</html>

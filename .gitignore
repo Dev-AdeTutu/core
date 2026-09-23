@@ -1,7 +1,9 @@
 node_modules/
 dist/
+examples/*/dist/
 .env
 .env.local
 *.tsbuildinfo
 coverage/
 .DS_Store
+fix.md

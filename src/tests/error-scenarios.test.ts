@@ -104,6 +104,65 @@ describe("error scenarios (#31)", () => {
       ]);
       expect(results.every((r) => r.status === "error")).toBe(true);
     });
+
+    // ─── LP balance mapping (issue #279) ──────────────────────────────────────
+    it("maps a liquidity_pool_shares balance with the actual pool ID, not 'LP'", async () => {
+      const poolId = "a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1";
+      mockLoadAccount.mockResolvedValueOnce({
+        balances: [
+          {
+            asset_type: "liquidity_pool_shares",
+            liquidity_pool_id: poolId,
+            balance: "42.0000000",
+          },
+        ],
+        sequence: "1",
+        subentry_count: 0,
+      });
+
+      const result = await getAccount("https://horizon.test", PK);
+      expect(result.status).toBe("ok");
+      if (result.status !== "ok") throw new Error("expected ok");
+
+      const lpBalance = result.data.balances[0];
+      expect(lpBalance?.assetType).toBe("liquidity_pool_shares");
+      // The assetCode must be the actual pool ID, not the hardcoded "LP" string.
+      expect(lpBalance?.assetCode).toBe(poolId);
+      // The liquidityPoolId field must be populated from b.liquidity_pool_id.
+      expect(lpBalance?.liquidityPoolId).toBe(poolId);
+      expect(lpBalance?.balanceFloat).toBe(42);
+    });
+
+    it("distinguishes multiple LP positions by their pool ID", async () => {
+      const poolId1 = "aaaa0000bbbb1111cccc2222dddd3333eeee4444ffff5555aaaa0000bbbb1111cc";
+      const poolId2 = "1111aaaa2222bbbb3333cccc4444dddd5555eeee6666ffff1111aaaa2222bbbb33";
+      mockLoadAccount.mockResolvedValueOnce({
+        balances: [
+          {
+            asset_type: "liquidity_pool_shares",
+            liquidity_pool_id: poolId1,
+            balance: "10.0000000",
+          },
+          {
+            asset_type: "liquidity_pool_shares",
+            liquidity_pool_id: poolId2,
+            balance: "20.0000000",
+          },
+        ],
+        sequence: "2",
+        subentry_count: 0,
+      });
+
+      const result = await getAccount("https://horizon.test", PK);
+      expect(result.status).toBe("ok");
+      if (result.status !== "ok") throw new Error("expected ok");
+
+      const [first, second] = result.data.balances;
+      // Each position must carry its own pool ID — they must not collapse to "LP".
+      expect(first?.liquidityPoolId).toBe(poolId1);
+      expect(second?.liquidityPoolId).toBe(poolId2);
+      expect(first?.assetCode).not.toBe(second?.assetCode);
+    });
   });
 
   // ─── transaction.submitTransaction ──────────────────────────────────────────

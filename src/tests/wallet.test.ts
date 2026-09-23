@@ -11,21 +11,27 @@ import {
 import {
   addSignatureToEnvelope,
   connectWallet,
+  createLocalStorageAdapter,
+  detectInstalledWallets,
   disconnectWallet,
   signTransaction,
+  signTransactionOffline,
   emptyWalletState,
   collectMultiSignatures,
   diagnoseWalletConnection,
+  prioritizeWallet,
+  recommendWallets,
   removeSignatureFromEnvelope,
+  createSigningChallenge,
+  mergeSignatures,
 } from "../wallet/index";
 import {
   InMemorySigningHistoryStore,
   getSigningHistory,
   exportSigningHistory,
+  type SigningRecord,
 } from "../wallet/signingHistory";
-import { FreighterAdapter } from "../wallet/adapters/freighter";
-import { XBullAdapter } from "../wallet/adapters/xbull";
-import { LobstrAdapter } from "../wallet/adapters/lobstr";
+import { FreighterAdapter, XBullAdapter, LobstrAdapter } from "../wallet/adapters";
 import { WalletType } from "../wallet/types";
 import { ok, err, SorokitErrorCode } from "../shared/response";
 import { createSorokitClient } from "../client/createSorokitClient";
@@ -102,9 +108,12 @@ describe("wallet adapters", () => {
       }
     });
 
-    it("disconnect() always returns status ok", async () => {
+    it("disconnect() always returns status ok with undefined data (#291)", async () => {
       const result = await new FreighterAdapter(mockKit()).disconnect();
       expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.data).toBeUndefined();
+      }
     });
 
     it("signTransaction() returns status error with WALLET_BROWSER_ONLY in Node", async () => {
@@ -131,6 +140,25 @@ describe("wallet adapters", () => {
         expect(result.error.code).toBe(SorokitErrorCode.WALLET_BROWSER_ONLY);
       }
     });
+
+    it("disconnect() always returns status ok with undefined data (#291)", async () => {
+      const result = await new XBullAdapter(mockKit()).disconnect();
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.data).toBeUndefined();
+      }
+    });
+
+    it("signTransaction() returns status error with WALLET_BROWSER_ONLY in Node", async () => {
+      const result = await new XBullAdapter(mockKit()).signTransaction({
+        transactionXdr: "xdr",
+        networkPassphrase: "Test SDF Network ; September 2015",
+      });
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.error.code).toBe(SorokitErrorCode.WALLET_BROWSER_ONLY);
+      }
+    });
   });
 
   describe("LobstrAdapter", () => {
@@ -140,6 +168,25 @@ describe("wallet adapters", () => {
 
     it("connect() returns status error with WALLET_BROWSER_ONLY in Node", async () => {
       const result = await new LobstrAdapter(mockKit()).connect();
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.error.code).toBe(SorokitErrorCode.WALLET_BROWSER_ONLY);
+      }
+    });
+
+    it("disconnect() always returns status ok with undefined data (#291)", async () => {
+      const result = await new LobstrAdapter(mockKit()).disconnect();
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.data).toBeUndefined();
+      }
+    });
+
+    it("signTransaction() returns status error with WALLET_BROWSER_ONLY in Node", async () => {
+      const result = await new LobstrAdapter(mockKit()).signTransaction({
+        transactionXdr: "xdr",
+        networkPassphrase: "Test SDF Network ; September 2015",
+      });
       expect(result.status).toBe("error");
       if (result.status === "error") {
         expect(result.error.code).toBe(SorokitErrorCode.WALLET_BROWSER_ONLY);
@@ -159,6 +206,17 @@ describe("wallet module functions", () => {
     }
   });
 
+  it("emptyWalletState() returns a fresh object reference on every call", () => {
+    const result1 = emptyWalletState();
+    const result2 = emptyWalletState();
+    expect(result1.status).toBe("ok");
+    expect(result2.status).toBe("ok");
+    if (result1.status === "ok" && result2.status === "ok") {
+      expect(result1).not.toBe(result2);
+      expect(result1.data).not.toBe(result2.data);
+    }
+  });
+
   it("connectWallet() returns status error with WALLET_BROWSER_ONLY in Node", async () => {
     const result = await connectWallet(new FreighterAdapter(mockKit()));
     expect(result.status).toBe("error");
@@ -168,12 +226,88 @@ describe("wallet module functions", () => {
   });
 
   it("disconnectWallet() returns status ok with clean state", async () => {
-    const result = await disconnectWallet(new FreighterAdapter(mockKit()));
+    const adapter = new FreighterAdapter(mockKit());
+    vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+    const result = await disconnectWallet(adapter);
     expect(result.status).toBe("ok");
     if (result.status === "ok") {
       expect(result.data.connected).toBe(false);
       expect(result.data.publicKey).toBeNull();
+      expect(result.data.walletType).toBeNull();
     }
+  });
+
+  describe("browser environment success paths (#296)", () => {
+    // FreighterAdapter.isAvailable() delegates to isBrowser(). Spying on the
+    // method is equivalent to mocking isBrowser for the scope of these tests
+    // without perturbing the global module state for other tests.
+
+    it("connectWallet() returns ok WalletState with full shape when adapter is available", async () => {
+      const adapter = new FreighterAdapter(mockKit());
+      vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+
+      const result = await connectWallet(adapter);
+
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.data).toEqual({
+          connected: true,
+          publicKey: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+          walletType: WalletType.FREIGHTER,
+        });
+      }
+    });
+
+    it("disconnectWallet() returns ok({ connected: false, publicKey: null, walletType: null }) in browser env", async () => {
+      const adapter = new FreighterAdapter(mockKit());
+      vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+
+      const result = await disconnectWallet(adapter);
+
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.data).toEqual({
+          connected: false,
+          publicKey: null,
+          walletType: null,
+        });
+      }
+    });
+  });
+
+  describe("connectWallet empty public key validation (#267)", () => {
+    it("returns WALLET_CONNECT_FAILED when adapter resolves with ok('')", async () => {
+      const adapter = new FreighterAdapter(mockKit());
+      vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+      vi.spyOn(adapter, "connect").mockResolvedValue(ok(""));
+
+      const result = await connectWallet(adapter);
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.error.code).toBe(SorokitErrorCode.WALLET_CONNECT_FAILED);
+        expect(result.error.message).toBe("Wallet returned an empty public key.");
+      }
+    });
+
+    it("returns ok WalletState when adapter resolves with a valid key", async () => {
+      const adapter = new FreighterAdapter(mockKit());
+      vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+      vi.spyOn(adapter, "connect").mockResolvedValue(
+        ok("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA"),
+      );
+
+      const result = await connectWallet(adapter);
+
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.data).toEqual({
+          connected: true,
+          publicKey: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+          walletType: WalletType.FREIGHTER,
+        });
+      }
+    });
   });
 
   it("signTransaction() returns status error with WALLET_BROWSER_ONLY in Node", async () => {
@@ -372,13 +506,6 @@ describe("envelope signature management (#118)", () => {
   });
 });
 
-import {
-  diagnoseWalletConnection,
-  detectInstalledWallets,
-  prioritizeWallet,
-  recommendWallets,
-} from "../wallet/index";
-
 function fakeAdapter(overrides?: Partial<WalletAdapter>): WalletAdapter {
   return {
     walletType: WalletType.FREIGHTER,
@@ -499,6 +626,158 @@ class SimpleCache implements SorokitCache {
     this.store.clear();
   }
 }
+
+describe("signing history export with filters (#387)", () => {
+  const sampleRecords: SigningRecord[] = [
+    {
+      txHash: "tx1",
+      signer: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+      timestamp: "2026-01-15T10:00:00Z",
+      status: "success",
+    },
+    {
+      txHash: "tx2",
+      signer: "GBB7ZYSKSOTSOBBYRXVMQKPZDAXKL6DGRIVLCHYJRHYAQFA32WZIRB6",
+      timestamp: "2026-02-01T12:00:00Z",
+      status: "failure",
+      error: "insufficient balance",
+    },
+    {
+      txHash: "tx3",
+      signer: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+      timestamp: "2026-03-01T14:30:00Z",
+      status: "success",
+    },
+  ];
+
+  it("exports all records to JSON format without filters", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "json");
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      expect(parsed).toHaveLength(3);
+      expect(parsed[0].txHash).toBe("tx1");
+    }
+  });
+
+  it("exports all records to CSV format without filters", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "csv");
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const lines = result.data.split("\n");
+      expect(lines[0]).toBe("txHash,signer,timestamp,status,error");
+      expect(lines.length).toBe(4); // header + 3 records
+    }
+  });
+
+  it("filters by signer", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "json", { signer: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA" });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      expect(parsed).toHaveLength(2);
+      expect(parsed.every((r: SigningRecord) => r.signer === "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA")).toBe(true);
+    }
+  });
+
+  it("filters by status", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "json", { status: "failure" });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].status).toBe("failure");
+    }
+  });
+
+  it("filters by date range (from and to)", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "json", {
+      from: "2026-01-20T00:00:00Z",
+      to: "2026-02-20T00:00:00Z",
+    });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].txHash).toBe("tx2");
+    }
+  });
+
+  it("combines multiple filters (signer and status)", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "json", {
+      signer: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+      status: "success",
+    });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      expect(parsed).toHaveLength(2);
+      expect(parsed.every((r: SigningRecord) => r.signer === "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA" && r.status === "success")).toBe(true);
+    }
+  });
+
+  it("handles empty export results correctly", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "json", { signer: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      expect(parsed).toHaveLength(0);
+    }
+  });
+
+  it("handles empty export results in CSV format", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "csv", { signer: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const lines = result.data.split("\n");
+      expect(lines[0]).toBe("txHash,signer,timestamp,status,error");
+      expect(lines.length).toBe(1); // header only
+    }
+  });
+
+  it("excludes private signing material from exports", () => {
+    const store = new InMemorySigningHistoryStore();
+    sampleRecords.forEach((r) => store.record(r));
+
+    const result = exportSigningHistory(store, "json");
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      // Ensure only audit-friendly fields are present
+      expect(parsed[0]).toHaveProperty("txHash");
+      expect(parsed[0]).toHaveProperty("signer");
+      expect(parsed[0]).toHaveProperty("timestamp");
+      expect(parsed[0]).toHaveProperty("status");
+      // No private keys or signature bytes
+      expect(parsed[0]).not.toHaveProperty("signature");
+      expect(parsed[0]).not.toHaveProperty("privateKey");
+    }
+  });
+});
 
 describe("wallet connection persistence and recovery", () => {
   it("connectWallet() persists state to cache after success", async () => {
@@ -772,5 +1051,489 @@ describe("prioritizeWallet (#95)", () => {
     const result = prioritizeWallet(adapters, WalletType.FREIGHTER);
     expect(result).toHaveLength(2);
     expect(result.every((a) => !a.isAvailable())).toBe(true);
+  });
+});
+
+import { listConnectedAccounts, switchAccount } from "../wallet/index";
+import type { ConnectedAccountsResult, AccountSwitchResult } from "../wallet/types";
+
+// ─── Fixtures ────────────────────────────────────────────────────────────────
+
+const ACCOUNT_A = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA";
+const ACCOUNT_B = "GBVV2ASSEN5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWWWB";
+const ACCOUNT_C = "GCCCCCSSEN5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWWWC";
+
+// ─── listConnectedAccounts ────────────────────────────────────────────────────
+
+describe("listConnectedAccounts", () => {
+  it("returns WALLET_BROWSER_ONLY when adapter is unavailable", async () => {
+    const adapter = fakeAdapter({ isAvailable: () => false });
+    const result = await listConnectedAccounts(adapter);
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_BROWSER_ONLY);
+    }
+  });
+
+  it("falls back to single active account when getAccounts is not present", async () => {
+    const adapter = fakeAdapter({
+      isAvailable: () => true,
+      connect: async () => ok(ACCOUNT_A),
+    });
+    // No getAccounts method on this adapter.
+    const result = await listConnectedAccounts(adapter);
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data.activeAccount).toBe(ACCOUNT_A);
+      expect(result.data.accounts).toEqual([ACCOUNT_A]);
+    }
+  });
+
+  it("returns all accounts from getAccounts plus the active account", async () => {
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({
+        isAvailable: () => true,
+        connect: async () => ok(ACCOUNT_A),
+      }),
+      getAccounts: vi.fn().mockResolvedValue(ok([ACCOUNT_A, ACCOUNT_B, ACCOUNT_C])),
+    };
+    const result = await listConnectedAccounts(adapter);
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data.activeAccount).toBe(ACCOUNT_A);
+      expect(result.data.accounts).toEqual([ACCOUNT_A, ACCOUNT_B, ACCOUNT_C]);
+    }
+  });
+
+  it("deduplicates accounts when the active account is also returned by getAccounts", async () => {
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({
+        isAvailable: () => true,
+        connect: async () => ok(ACCOUNT_A),
+      }),
+      // getAccounts returns ACCOUNT_A again alongside ACCOUNT_B
+      getAccounts: vi.fn().mockResolvedValue(ok([ACCOUNT_A, ACCOUNT_B])),
+    };
+    const result = await listConnectedAccounts(adapter);
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      // ACCOUNT_A must not appear twice
+      expect(result.data.accounts.filter((k) => k === ACCOUNT_A)).toHaveLength(1);
+      expect(result.data.accounts).toContain(ACCOUNT_B);
+    }
+  });
+
+  it("propagates error when connect() fails", async () => {
+    const adapter = fakeAdapter({
+      isAvailable: () => true,
+      connect: async () => err(SorokitErrorCode.WALLET_CONNECT_FAILED, "wallet locked"),
+    });
+    const result = await listConnectedAccounts(adapter);
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_CONNECT_FAILED);
+    }
+  });
+
+  it("propagates error when getAccounts() fails", async () => {
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({
+        isAvailable: () => true,
+        connect: async () => ok(ACCOUNT_A),
+      }),
+      getAccounts: vi.fn().mockResolvedValue(
+        err(SorokitErrorCode.WALLET_CONNECT_FAILED, "accounts unavailable"),
+      ),
+    };
+    const result = await listConnectedAccounts(adapter);
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_CONNECT_FAILED);
+    }
+  });
+
+  it("returns a single-item accounts list when wallet only exposes the active account", async () => {
+    // getAccounts returns only the active account
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({
+        isAvailable: () => true,
+        connect: async () => ok(ACCOUNT_B),
+      }),
+      getAccounts: vi.fn().mockResolvedValue(ok([ACCOUNT_B])),
+    };
+    const result = await listConnectedAccounts(adapter);
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data.accounts).toHaveLength(1);
+      expect(result.data.accounts[0]).toBe(ACCOUNT_B);
+      expect(result.data.activeAccount).toBe(ACCOUNT_B);
+    }
+  });
+});
+
+// ─── switchAccount ────────────────────────────────────────────────────────────
+
+describe("switchAccount", () => {
+  it("returns WALLET_BROWSER_ONLY when adapter is unavailable", async () => {
+    const adapter = fakeAdapter({ isAvailable: () => false });
+    const result = await switchAccount(adapter, ACCOUNT_B);
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_BROWSER_ONLY);
+    }
+  });
+
+  it("returns WALLET_NOT_FOUND when adapter does not implement setActiveAccount", async () => {
+    // fakeAdapter has no setActiveAccount
+    const adapter = fakeAdapter({ isAvailable: () => true });
+    const result = await switchAccount(adapter, ACCOUNT_B);
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_NOT_FOUND);
+      expect(result.error.message).toContain("programmatic account switching");
+    }
+  });
+
+  it("returns WALLET_CONNECT_FAILED when accountKey is empty", async () => {
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({ isAvailable: () => true }),
+      setActiveAccount: vi.fn().mockResolvedValue(ok(ACCOUNT_B)),
+    };
+    const result = await switchAccount(adapter, "   ");
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_CONNECT_FAILED);
+    }
+  });
+
+  it("calls setActiveAccount with the provided key and returns a connected WalletState", async () => {
+    const setActiveAccount = vi.fn().mockResolvedValue(ok(ACCOUNT_B));
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({ isAvailable: () => true, walletType: WalletType.FREIGHTER }),
+      setActiveAccount,
+    };
+
+    const result = await switchAccount(adapter, ACCOUNT_B);
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data.publicKey).toBe(ACCOUNT_B);
+      expect(result.data.walletState.connected).toBe(true);
+      expect(result.data.walletState.publicKey).toBe(ACCOUNT_B);
+      expect(result.data.walletState.walletType).toBe(WalletType.FREIGHTER);
+    }
+    expect(setActiveAccount).toHaveBeenCalledOnce();
+    expect(setActiveAccount).toHaveBeenCalledWith(ACCOUNT_B);
+  });
+
+  it("propagates error when setActiveAccount fails", async () => {
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({ isAvailable: () => true }),
+      setActiveAccount: vi.fn().mockResolvedValue(
+        err(SorokitErrorCode.WALLET_SIGN_REJECTED, "user cancelled"),
+      ),
+    };
+    const result = await switchAccount(adapter, ACCOUNT_B);
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_REJECTED);
+    }
+  });
+
+  it("can switch between multiple accounts in sequence", async () => {
+    let activeKey = ACCOUNT_A;
+    const setActiveAccount = vi.fn().mockImplementation(async (key: string) => {
+      activeKey = key;
+      return ok(key);
+    });
+    const adapter: WalletAdapter = {
+      ...fakeAdapter({ isAvailable: () => true, walletType: WalletType.XBULL }),
+      setActiveAccount,
+    };
+
+    const switchToB = await switchAccount(adapter, ACCOUNT_B);
+    expect(switchToB.status).toBe("ok");
+    if (switchToB.status === "ok") expect(switchToB.data.publicKey).toBe(ACCOUNT_B);
+
+    const switchToC = await switchAccount(adapter, ACCOUNT_C);
+    expect(switchToC.status).toBe("ok");
+    if (switchToC.status === "ok") expect(switchToC.data.publicKey).toBe(ACCOUNT_C);
+
+    expect(setActiveAccount).toHaveBeenCalledTimes(2);
+    expect(activeKey).toBe(ACCOUNT_C);
+  });
+});
+
+describe("signTransactionOffline (#145)", () => {
+  it("signs an unsigned transaction XDR with a secret key", () => {
+    const source = Keypair.random();
+    const unsigned = new TransactionBuilder(
+      new Account(source.publicKey(), "1"),
+      {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+      },
+    )
+      .addOperation(
+        Operation.manageData({ name: "offline-sign", value: "ok" }),
+      )
+      .setTimeout(30)
+      .build()
+      .toXDR();
+
+    const result = signTransactionOffline(
+      unsigned,
+      source.secret(),
+      Networks.TESTNET,
+    );
+
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+
+    expect(result.data).not.toBe(unsigned);
+    expect(envelopeSignatures(result.data)).toHaveLength(1);
+
+    const signedTx = TransactionBuilder.fromXDR(result.data, Networks.TESTNET);
+    expect(signedTx.signatures).toHaveLength(1);
+  });
+
+  it("returns WALLET_SIGN_FAILED for an invalid private key", () => {
+    const result = signTransactionOffline(
+      createUnsignedEnvelopeXdr(),
+      "not-a-secret-seed",
+      Networks.TESTNET,
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_FAILED);
+    expect(result.error.message).toContain("secret seed");
+  });
+
+  it("returns WALLET_SIGN_FAILED for empty XDR", () => {
+    const source = Keypair.random();
+    const result = signTransactionOffline(
+      "  ",
+      source.secret(),
+      Networks.TESTNET,
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_FAILED);
+    expect(result.error.message).toContain("XDR");
+  });
+
+  it("returns WALLET_SIGN_FAILED for invalid XDR", () => {
+    const source = Keypair.random();
+    const result = signTransactionOffline(
+      "not-valid-xdr",
+      source.secret(),
+      Networks.TESTNET,
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_FAILED);
+  });
+
+  it("returns WALLET_SIGN_FAILED when network passphrase is missing", () => {
+    const source = Keypair.random();
+    const result = signTransactionOffline(
+      createUnsignedEnvelopeXdr(),
+      source.secret(),
+      "   ",
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_FAILED);
+    expect(result.error.message).toContain("passphrase");
+  });
+
+  it("produces a signature that matches the source keypair hint", () => {
+    const source = Keypair.random();
+    const unsigned = new TransactionBuilder(
+      new Account(source.publicKey(), "42"),
+      {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+      },
+    )
+      .addOperation(Operation.manageData({ name: "hint-check", value: null }))
+      .setTimeout(30)
+      .build()
+      .toXDR();
+
+    const result = signTransactionOffline(
+      unsigned,
+      source.secret(),
+      Networks.TESTNET,
+    );
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+
+    const signatures = envelopeSignatures(result.data);
+    expect(signatures).toHaveLength(1);
+    expect(Buffer.from(signatures[0]!.hint())).toEqual(
+      Buffer.from(source.signatureHint()),
+    );
+  });
+});
+
+describe("adapter signTransaction() with browser simulation (#274)", () => {
+  it("FreighterAdapter returns ok with signed XDR when isAvailable() is mocked true", async () => {
+    const kit = mockKit();
+    const adapter = new FreighterAdapter(kit);
+    vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+
+    const result = await adapter.signTransaction({
+      transactionXdr: "some-xdr",
+      networkPassphrase: "Test SDF Network ; September 2015",
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data).toBe("signed-xdr-string");
+    }
+  });
+
+  it("FreighterAdapter returns WALLET_SIGN_REJECTED when user rejects in simulated browser", async () => {
+    const kit = mockKit({
+      signTransaction: vi.fn().mockRejectedValue(new Error("User rejected the request")),
+    });
+    const adapter = new FreighterAdapter(kit);
+    vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+
+    const result = await adapter.signTransaction({
+      transactionXdr: "some-xdr",
+      networkPassphrase: "Test SDF Network ; September 2015",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_REJECTED);
+    }
+  });
+
+  it("FreighterAdapter returns WALLET_SIGN_FAILED when signing throws a non-rejection error", async () => {
+    const kit = mockKit({
+      signTransaction: vi.fn().mockRejectedValue(new Error("Network timeout")),
+    });
+    const adapter = new FreighterAdapter(kit);
+    vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+
+    const result = await adapter.signTransaction({
+      transactionXdr: "some-xdr",
+      networkPassphrase: "Test SDF Network ; September 2015",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_FAILED);
+    }
+  });
+
+  it("XBullAdapter returns ok with signed XDR when isAvailable() is mocked true", async () => {
+    const kit = mockKit();
+    const adapter = new XBullAdapter(kit);
+    vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+
+    const result = await adapter.signTransaction({
+      transactionXdr: "some-xdr",
+      networkPassphrase: "Test SDF Network ; September 2015",
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data).toBe("signed-xdr-string");
+    }
+  });
+
+  it("LobstrAdapter returns ok with signed XDR when isAvailable() is mocked true", async () => {
+    const kit = mockKit();
+    const adapter = new LobstrAdapter(kit);
+    vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+
+    const result = await adapter.signTransaction({
+      transactionXdr: "some-xdr",
+      networkPassphrase: "Test SDF Network ; September 2015",
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data).toBe("signed-xdr-string");
+    }
+  });
+
+  it("all three adapters route user-rejection to WALLET_SIGN_REJECTED", async () => {
+    const rejectedError = new Error("User rejected the request");
+    const kitFn = () =>
+      mockKit({ signTransaction: vi.fn().mockRejectedValue(rejectedError) });
+
+    const adapters = [
+      new FreighterAdapter(kitFn()),
+      new XBullAdapter(kitFn()),
+      new LobstrAdapter(kitFn()),
+    ];
+
+    for (const adapter of adapters) {
+      vi.spyOn(adapter, "isAvailable").mockReturnValue(true);
+      const result = await adapter.signTransaction({
+        transactionXdr: "xdr",
+        networkPassphrase: "Test SDF Network ; September 2015",
+      });
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_REJECTED);
+      }
+    }
+  });
+});
+
+describe("signing delegation", () => {
+  it("collects partial signatures and completes when all required signers are present", () => {
+    const envelopeXdr = createUnsignedEnvelopeXdr();
+    const challenge = createSigningChallenge(envelopeXdr, ["GA", "GB"], {
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const partial = mergeSignatures(challenge, [
+      { signer: "GA", signature: createDecoratedSignature() },
+    ]);
+    const complete = mergeSignatures(partial.challenge, [
+      {
+        signer: "GB",
+        signature: createDecoratedSignature(Buffer.from([4, 3, 2, 1])),
+      },
+    ]);
+
+    expect(partial.complete).toBe(false);
+    expect(partial.missingSigners).toEqual(["GB"]);
+    expect(complete.complete).toBe(true);
+    expect(envelopeSignatures(complete.transactionXdr)).toHaveLength(2);
+  });
+
+  it("rejects duplicate and expired delegated signatures", () => {
+    const envelopeXdr = createUnsignedEnvelopeXdr();
+    const challenge = createSigningChallenge(envelopeXdr, ["GA"], {
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    expect(() =>
+      mergeSignatures(challenge, [
+        { signer: "GA", signature: createDecoratedSignature() },
+        {
+          signer: "GA",
+          signature: createDecoratedSignature(Buffer.from([9, 9, 9, 9])),
+        },
+      ]),
+    ).toThrow(/Duplicate signature/);
+
+    const expired = createSigningChallenge(envelopeXdr, ["GA"], {
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+    expect(() =>
+      mergeSignatures(expired, [{ signer: "GA", signature: createDecoratedSignature() }]),
+    ).toThrow(/expired/);
   });
 });

@@ -1,9 +1,9 @@
 import {
-  Horizon,
   TransactionBuilder,
   Operation,
   Asset,
   Memo,
+  Account,
   BASE_FEE,
 } from "@stellar/stellar-sdk";
 import { ok, err, SorokitErrorCode } from "../shared/response";
@@ -13,13 +13,29 @@ import { DEFAULT_TX_TIMEOUT_SECONDS } from "../shared/constants";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import type { PaymentParams, TrustlineParams, AccountCreateParams } from "./types";
 import { validateIssuer } from "../shared/validateIssuer";
+import { createHorizonServer } from "../shared/serverFactory";
 
 /** Context TTL: 5 minutes */
 export const TRANSACTION_CONTEXT_TTL_MS = 5 * 60 * 1000;
 
 /**
+ * Structured outcome of a fresh-sequence validation (#394).
+ */
+export interface SequenceValidationResult {
+  /** `true` when the on-ledger sequence matches the next sequence the context will assign. */
+  valid: boolean;
+  /** Next sequence number the context will assign to a new transaction. */
+  expectedSequence: string;
+  /** Current on-ledger sequence number observed at validation time. */
+  networkSequence: string;
+}
+
+/**
  * A pre-fetched builder context that reuses a cached account sequence number
  * and base fee across multiple transaction builds.
+ *
+ * Every build consumes the next sequence from an in-memory counter so that
+ * sequential transactions never collide on the same sequence (#394).
  *
  * Obtain via {@link createTransactionContext}.
  */
@@ -30,6 +46,22 @@ export interface TransactionBuilderContext {
   isExpired(): boolean;
   /** Force-expire the context so the next build re-fetches the account. */
   invalidate(): void;
+  /**
+   * Peek the next sequence number the context will assign without consuming it.
+   */
+  peekNextSequence(): string;
+  /**
+   * Re-fetch the source account from Horizon and verify the context's next
+   * sequence still matches the on-ledger state. Call before submitting to
+   * detect stale sequences or conflicts with transactions submitted outside
+   * of this context. Returns TX_SEQUENCE_CONFLICT when they diverge.
+   */
+  validateFreshSequence(): Promise<SorokitResult<SequenceValidationResult>>;
+  /**
+   * Reset the context: re-fetch the account from Horizon and adopt its
+   * sequence (never regressing below any already-assigned sequence).
+   */
+  reset(): Promise<SorokitResult<SequenceValidationResult>>;
   /** Build a payment transaction XDR, reusing the cached sequence. */
   buildPayment(
     params: PaymentParams,
@@ -68,22 +100,29 @@ function resolveMemo(params: { memo?: string; memoType?: string }): SorokitResul
   }
 }
 
+function loadNetworkSequence(server: { loadAccount(publicKey: string): Promise<{ sequenceNumber(): string }> }, publicKey: string): Promise<string> {
+  return server.loadAccount(publicKey).then((account) => account.sequenceNumber());
+}
+
 /**
  * Create a transaction builder context that pre-fetches the source account
- * (sequence number + network config) once, then reuses the cached data for
- * every subsequent build — avoiding repeated Horizon round trips.
+ * (sequence number + network config) once, then maintains an in-memory
+ * sequence counter for every subsequent build — avoiding repeated Horizon
+ * round trips while guaranteeing unique sequence numbers (#394).
  *
  * The context automatically refreshes after {@link TRANSACTION_CONTEXT_TTL_MS}
- * (5 minutes). Call `invalidate()` to force an early refresh.
+ * (5 minutes). Call `invalidate()` or `reset()` to force an early refresh.
  *
  * @example
  * const ctxResult = await createTransactionContext(horizonUrl, networkConfig, publicKey);
  * if (ctxResult.status !== "ok") throw new Error(ctxResult.error.message);
  * const ctx = ctxResult.data;
  *
- * const xdr1 = await ctx.buildPayment({ destination, amount: "10" });
- * const xdr2 = await ctx.buildPayment({ destination, amount: "5" });
- * // Both builds reuse the same pre-fetched account — no extra Horizon calls.
+ * const xdr1 = await ctx.buildPayment({ destination, amount: "10" }); // seq N
+ * const xdr2 = await ctx.buildPayment({ destination, amount: "5" });  // seq N+1
+ *
+ * // Optional: verify no conflicting transaction landed before submitting.
+ * const check = await ctx.validateFreshSequence();
  */
 export async function createTransactionContext(
   horizonUrl: string,
@@ -91,24 +130,42 @@ export async function createTransactionContext(
   publicKey: string,
 ): Promise<SorokitResult<TransactionBuilderContext>> {
   try {
-    const server = new Horizon.Server(horizonUrl);
-    let currentAccount = await server.loadAccount(publicKey);
+    const server = createHorizonServer(horizonUrl) as unknown as {
+      loadAccount(publicKey: string): Promise<{ sequenceNumber(): string }>;
+    };
+    const initialAccount = await server.loadAccount(publicKey);
+    let nextSequence = BigInt(initialAccount.sequenceNumber());
     let cachedAt = Date.now();
+
+    async function refresh(): Promise<SorokitResult<void>> {
+      try {
+        const networkSequence = await loadNetworkSequence(server, publicKey);
+        // Never regress below sequences already handed out by this context.
+        nextSequence =
+          BigInt(networkSequence) > nextSequence
+            ? BigInt(networkSequence)
+            : nextSequence;
+        cachedAt = Date.now();
+      } catch (cause) {
+        return err(
+          SorokitErrorCode.TX_BUILD_FAILED,
+          `Failed to refresh transaction context: ${toMessage(cause)}`,
+          cause,
+        );
+      }
+      return ok(undefined);
+    }
 
     async function ensureFresh(): Promise<SorokitResult<void>> {
       if (Date.now() - cachedAt > TRANSACTION_CONTEXT_TTL_MS) {
-        try {
-          currentAccount = await server.loadAccount(publicKey);
-          cachedAt = Date.now();
-        } catch (cause) {
-          return err(
-            SorokitErrorCode.TX_BUILD_FAILED,
-            `Failed to refresh transaction context: ${toMessage(cause)}`,
-            cause,
-          );
-        }
+        const refreshed = await refresh();
+        if (refreshed.status === "error") return refreshed;
       }
       return ok(undefined);
+    }
+
+    function fetchFreshSequence(): Promise<string> {
+      return loadNetworkSequence(server, publicKey);
     }
 
     return ok({
@@ -120,6 +177,64 @@ export async function createTransactionContext(
 
       invalidate(): void {
         cachedAt = 0;
+      },
+
+      peekNextSequence(): string {
+        return nextSequence.toString();
+      },
+
+      async validateFreshSequence(): Promise<SorokitResult<SequenceValidationResult>> {
+        let networkSequenceStr: string;
+        try {
+          networkSequenceStr = await fetchFreshSequence();
+        } catch (cause) {
+          return err(
+            SorokitErrorCode.TX_BUILD_FAILED,
+            `Failed to fetch fresh sequence for validation: ${toMessage(cause)}`,
+            cause,
+          );
+        }
+
+        // nextSequence is the base the next build will consume; a pending tx
+        // applies when the ledger sits exactly at its base value.
+        const expectedSequence = nextSequence.toString();
+        const fetched = BigInt(networkSequenceStr);
+
+        if (fetched > nextSequence) {
+          return err(
+            SorokitErrorCode.TX_SEQUENCE_CONFLICT,
+            `Sequence conflict: context expects ${expectedSequence} but the network reports ${networkSequenceStr}. Another transaction consumed this sequence — reset() the context before building again.`,
+            { expectedSequence, networkSequence: networkSequenceStr },
+          );
+        }
+
+        return ok({
+          valid: fetched === nextSequence,
+          expectedSequence,
+          networkSequence: networkSequenceStr,
+        });
+      },
+
+      async reset(): Promise<SorokitResult<SequenceValidationResult>> {
+        let networkSequenceStr: string;
+        try {
+          networkSequenceStr = await fetchFreshSequence();
+        } catch (cause) {
+          return err(
+            SorokitErrorCode.TX_BUILD_FAILED,
+            `Failed to reset transaction context: ${toMessage(cause)}`,
+            cause,
+          );
+        }
+        // Never regress below sequences already handed out by this context.
+        const fetched = BigInt(networkSequenceStr);
+        if (fetched > nextSequence) nextSequence = fetched;
+        cachedAt = Date.now();
+        return ok({
+          valid: true,
+          expectedSequence: nextSequence.toString(),
+          networkSequence: networkSequenceStr,
+        });
       },
 
       async buildPayment(
@@ -157,8 +272,12 @@ export async function createTransactionContext(
         const memoResult = resolveMemo(params);
         if (memoResult.status === "error") return memoResult;
 
+        // Allocate the sequence synchronously so concurrent builds never collide.
+        const assignedSequence = nextSequence;
+        const sourceAccount = new Account(publicKey, assignedSequence.toString());
+
         try {
-          const builder = new TransactionBuilder(currentAccount, {
+          const builder = new TransactionBuilder(sourceAccount, {
             fee: BASE_FEE,
             networkPassphrase: networkConfig.networkPassphrase,
           })
@@ -167,7 +286,9 @@ export async function createTransactionContext(
             )
             .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS);
           if (memoResult.data) builder.addMemo(memoResult.data);
-          return ok(builder.build().toXDR());
+          const xdr = builder.build().toXDR();
+          nextSequence = assignedSequence + 1n;
+          return ok(xdr);
         } catch (cause) {
           return err(
             SorokitErrorCode.TX_BUILD_FAILED,
@@ -184,8 +305,11 @@ export async function createTransactionContext(
         const memoResult = resolveMemo(params);
         if (memoResult.status === "error") return memoResult;
 
+        const assignedSequence = nextSequence;
+        const sourceAccount = new Account(publicKey, assignedSequence.toString());
+
         try {
-          const builder = new TransactionBuilder(currentAccount, {
+          const builder = new TransactionBuilder(sourceAccount, {
             fee: BASE_FEE,
             networkPassphrase: networkConfig.networkPassphrase,
           })
@@ -197,7 +321,9 @@ export async function createTransactionContext(
             )
             .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS);
           if (memoResult.data) builder.addMemo(memoResult.data);
-          return ok(builder.build().toXDR());
+          const xdr = builder.build().toXDR();
+          nextSequence = assignedSequence + 1n;
+          return ok(xdr);
         } catch (cause) {
           return err(
             SorokitErrorCode.TX_BUILD_FAILED,
@@ -229,9 +355,12 @@ export async function createTransactionContext(
         const memoResult = resolveMemo(params);
         if (memoResult.status === "error") return memoResult;
 
+        const assignedSequence = nextSequence;
+        const sourceAccount = new Account(publicKey, assignedSequence.toString());
+
         try {
           const asset = new Asset(params.assetCode, params.assetIssuer);
-          const builder = new TransactionBuilder(currentAccount, {
+          const builder = new TransactionBuilder(sourceAccount, {
             fee: BASE_FEE,
             networkPassphrase: networkConfig.networkPassphrase,
           })
@@ -243,7 +372,9 @@ export async function createTransactionContext(
             )
             .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS);
           if (memoResult.data) builder.addMemo(memoResult.data);
-          return ok(builder.build().toXDR());
+          const xdr = builder.build().toXDR();
+          nextSequence = assignedSequence + 1n;
+          return ok(xdr);
         } catch (cause) {
           return err(
             SorokitErrorCode.TX_BUILD_FAILED,

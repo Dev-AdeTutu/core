@@ -4,6 +4,7 @@ import type { SorokitResult } from "../shared/response";
 import { isNotFoundError, toMessage } from "../shared";
 import type { TransactionResult } from "./types";
 import type { SorokitCache } from "../shared/cache";
+import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
 
 /**
  * Fetch the current status of a submitted transaction by its hash.
@@ -17,7 +18,7 @@ import type { SorokitCache } from "../shared/cache";
  * @param cache      - Optional cache to check before hitting Horizon.
  * @returns `ok(TransactionResult)` with the confirmed transaction details,
  *          `error(TX_NOT_FOUND)` when the hash is unknown to Horizon,
- *          or `error(TX_SUBMIT_FAILED)` on other network failures.
+ *          or `error(TX_FETCH_FAILED)` on other network failures.
  *
  * @example
  * const result = await getTransactionStatus(horizonUrl, txHash);
@@ -29,6 +30,7 @@ export async function getTransactionStatus(
   horizonUrl: string,
   hash: string,
   cache?: SorokitCache,
+  options?: { signal?: AbortSignal | undefined },
 ): Promise<SorokitResult<TransactionResult>> {
   if (cache) {
     const cached = cache.get(`tx:${hash}`);
@@ -38,17 +40,22 @@ export async function getTransactionStatus(
   }
 
   try {
-    const server = new Horizon.Server(horizonUrl);
+    const server = createHorizonServer(horizonUrl, options);
     const tx = await server.transactions().transaction(hash).call();
+
+    // Horizon reports ledger_attr as 0 (or omits it) for a transaction that has
+    // been submitted but not yet included in a ledger — treat that as "pending"
+    // rather than surfacing a meaningless ledger number.
+    const isPending = !tx.ledger_attr;
 
     const result: TransactionResult = {
       hash: tx.hash,
-      status: tx.successful ? "success" : "failed",
-      ledger: tx.ledger_attr,
+      status: isPending ? "pending" : tx.successful ? "success" : "failed",
       createdAt: tx.created_at,
       fee: String(tx.fee_charged),
       envelopeXdr: tx.envelope_xdr,
       resultXdr: tx.result_xdr,
+      ...(isPending ? {} : { ledger: tx.ledger_attr }),
     };
 
     if (cache) {
@@ -60,7 +67,7 @@ export async function getTransactionStatus(
     return err(
       isNotFoundError(cause)
         ? SorokitErrorCode.TX_NOT_FOUND
-        : SorokitErrorCode.TX_SUBMIT_FAILED,
+        : SorokitErrorCode.TX_FETCH_FAILED,
       isNotFoundError(cause)
         ? `Transaction not found: ${hash}`
         : `Failed to fetch transaction status: ${toMessage(cause)}`,

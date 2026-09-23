@@ -5,18 +5,18 @@ import {
   scValToNative,
   rpc as SorobanRpc,
   TransactionBuilder,
-  xdr,
 } from "@stellar/stellar-sdk";
-import { createHash } from "crypto";
 import { toMessage } from "../shared";
-import { DEFAULT_TX_TIMEOUT_SECONDS } from "../shared/constants";
+import { DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS } from "../shared/constants";
 import type { SorokitResult } from "../shared/response";
 import { err, ok, SorokitErrorCode } from "../shared/response";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import { deduplicateRequest } from "../shared/utils";
 import { validateContractMethodMetadata } from "./contractMetadata";
+import { createContractReadCacheKey } from "./contractCallIdentity";
 import type { ContractCallResult, ContractReadParams } from "./types";
 import { validateContractAbi } from "./validateContractAbi";
+import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
 
 /**
  * Read (simulate) a Soroban contract view function — no signing required.
@@ -49,23 +49,6 @@ import { validateContractAbi } from "./validateContractAbi";
  *   console.log("Return value:", result.data.result);
  * }
  */
-function generateCacheKey(
-  contractId: string,
-  method: string,
-  args?: xdr.ScVal[],
-): string {
-  let argsXdr = "";
-  try {
-    argsXdr = args?.map((arg) => arg.toXDR("base64")).join("") ?? "";
-  } catch {
-    // If args can't be serialized to XDR (e.g., in tests with mocks),
-    // use JSON stringification as a fallback
-    argsXdr = args ? JSON.stringify(args) : "";
-  }
-  const inputString = contractId + method + argsXdr;
-  return createHash("sha256").update(inputString).digest("hex");
-}
-
 export async function readContract(
   rpcUrl: string,
   horizonUrl: string,
@@ -94,13 +77,23 @@ export async function readContract(
   if (metadataResult.status === "error") return metadataResult;
 
   const cache = params.cache;
-  const cacheKey = cache
-    ? generateCacheKey(params.contractId, params.method, params.args)
-    : undefined;
+  const useCache = cache !== undefined && params.bypassCache !== true;
   const ttlMs = params.ttlMs ?? 5 * 60 * 1000; // Default 5 minutes
+  const revision = useCache
+    ? await params.stateTracker?.getRevision(params.contractId) ?? 0
+    : 0;
+  const cacheKey = useCache
+    ? createContractReadCacheKey(
+        params.contractId,
+        params.method,
+        params.args,
+        revision,
+        networkConfig.networkPassphrase,
+      )
+    : undefined;
 
-  // Check cache if available
-  if (cache && cacheKey) {
+  // Check cache if available and not explicitly bypassed.
+  if (useCache && cacheKey) {
     const cached = cache.get(cacheKey);
     if (cached != null) {
       return ok(cached as ContractCallResult);
@@ -110,17 +103,11 @@ export async function readContract(
   // Deduplicate concurrent identical reads
   const performRead = async (): Promise<SorokitResult<ContractCallResult>> => {
     try {
-      const rpc = new SorobanRpc.Server(rpcUrl);
-      const horizonServer = new Horizon.Server(horizonUrl);
+      const rpc = createSorobanServer(rpcUrl);
+      const horizonServer = createHorizonServer(horizonUrl);
       const contract = new Contract(params.contractId);
 
-      const sourceAccount = await horizonServer
-        .loadAccount(params.publicKey)
-        .catch((cause) => {
-          throw new Error(
-            `Could not load source account ${params.publicKey}: ${toMessage(cause)}`,
-          );
-        });
+      const sourceAccount = await horizonServer.loadAccount(params.publicKey);
 
       const operation = contract.call(params.method, ...(params.args ?? []));
 
@@ -129,7 +116,7 @@ export async function readContract(
         networkPassphrase: networkConfig.networkPassphrase,
       })
         .addOperation(operation)
-        .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS)
+        .setTimeout(DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS)
         .build();
 
       const simResult = await rpc.simulateTransaction(tx);
@@ -153,7 +140,7 @@ export async function readContract(
       const result = { result: scVal, value: scValToNative(scVal) };
 
       // Cache successful result
-      if (cache && cacheKey) {
+      if (useCache && cacheKey) {
         cache.set(cacheKey, result, ttlMs);
       }
 
@@ -167,7 +154,7 @@ export async function readContract(
     }
   };
 
-  if (cache && cacheKey) {
+  if (useCache && cacheKey) {
     return deduplicateRequest(cacheKey, performRead);
   }
 

@@ -23,10 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive TypeScript types for all operations
 - ESLint and TypeScript configuration for code quality
 - Vitest test suite with coverage
+- `validateDeployConfig`, `collectDeployConfigIssues`, and `formatDeployConfigIssues` for
+  pre-flight validation of contract deployment configuration, reporting every missing or
+  malformed value with an actionable fix (#356)
+- `examples/router-swap` — frontend reference for router integration covering quote
+  retrieval, swap execution, and transaction tracking (#357)
+- `npm run typecheck:examples` to type-check bundled examples against the SDK source
 
 ### Fixed
 
 ### Changed
+
+- `buildContractDeploy` validates its configuration before contacting the network and
+  returns `INVALID_CONFIG` with per-field guidance instead of an opaque RPC or SDK error (#356)
 
 ### Deprecated
 

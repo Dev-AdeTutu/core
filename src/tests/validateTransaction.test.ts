@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { validateTransaction } from "../transaction/validateTransaction";
+import {
+  validateTransaction,
+  validateTransactionBatch,
+} from "../transaction/validateTransaction";
 import type { ValidationRules, TransactionValidationContext } from "../transaction/validateTransaction";
 import { SorokitErrorCode } from "../shared/response";
 
@@ -477,4 +480,189 @@ describe("validateTransaction", () => {
       }
     });
   });
+
+  // ─── validateTransactionBatch (#385) ─────────────────────────────────────────
+
+  describe("validateTransactionBatch", () => {
+    it("returns an empty array when given an empty list of XDRs", async () => {
+      const results = await validateTransactionBatch([]);
+      expect(results).toEqual([]);
+    });
+
+    it("returns an empty array safely when given invalid input", async () => {
+      const results = await validateTransactionBatch(null as unknown as string[]);
+      expect(results).toEqual([]);
+    });
+
+    it("validates multiple independent transactions concurrently", async () => {
+      mocks.fromXDR.mockImplementation((xdr: string) => {
+        if (xdr === "xdr-1") return makePaymentTx({ fee: 100 });
+        if (xdr === "xdr-2") return makePaymentTx({ fee: 200 });
+        return makePaymentTx({ fee: 300 });
+      });
+      mocks.isValidEd25519PublicKey.mockReturnValue(true);
+
+      const xdrs = ["xdr-1", "xdr-2", "xdr-3"];
+      const results = await validateTransactionBatch(xdrs);
+
+      expect(results).toHaveLength(3);
+      expect(results[0]?.status).toBe("ok");
+      expect(results[1]?.status).toBe("ok");
+      expect(results[2]?.status).toBe("ok");
+
+      if (
+        results[0]?.status === "ok" &&
+        results[1]?.status === "ok" &&
+        results[2]?.status === "ok"
+      ) {
+        expect(results[0].data.valid).toBe(true);
+        expect(results[0].data.fee).toBe("100");
+        expect(results[1].data.fee).toBe("200");
+        expect(results[2].data.fee).toBe("300");
+      }
+    });
+
+    it("strictly preserves input and output ordering", async () => {
+      mocks.fromXDR.mockImplementation((xdr: string) => {
+        if (xdr === "first") return makePaymentTx({ fee: 100 });
+        if (xdr === "second") return makePaymentTx({ fee: 200 });
+        return makePaymentTx({ fee: 300 });
+      });
+      mocks.isValidEd25519PublicKey.mockReturnValue(true);
+
+      const xdrs = ["first", "second", "third"];
+      const results = await validateTransactionBatch(xdrs);
+
+      expect(results).toHaveLength(3);
+      if (
+        results[0]?.status === "ok" &&
+        results[1]?.status === "ok" &&
+        results[2]?.status === "ok"
+      ) {
+        expect(results[0].data.fee).toBe("100");
+        expect(results[1].data.fee).toBe("200");
+        expect(results[2].data.fee).toBe("300");
+      }
+    });
+
+    it("isolates individual transaction failures without aborting the batch", async () => {
+      mocks.fromXDR.mockImplementation((xdr: string) => {
+        if (xdr === "valid-1") return makePaymentTx({ fee: 150 });
+        if (xdr === "malformed") throw new Error("Invalid XDR decode buffer");
+        if (xdr === "valid-2") return makePaymentTx({ fee: 250 });
+        return makePaymentTx({ fee: 100 });
+      });
+      mocks.isValidEd25519PublicKey.mockReturnValue(true);
+
+      const xdrs = ["valid-1", "malformed", "valid-2"];
+      const results = await validateTransactionBatch(xdrs);
+
+      expect(results).toHaveLength(3);
+
+      // First transaction succeeds
+      expect(results[0]?.status).toBe("ok");
+      if (results[0]?.status === "ok") {
+        expect(results[0].data.valid).toBe(true);
+        expect(results[0].data.fee).toBe("150");
+      }
+
+      // Second transaction fails to parse XDR, returning error result
+      expect(results[1]?.status).toBe("error");
+      if (results[1]?.status === "error") {
+        expect(results[1].error.code).toBe(SorokitErrorCode.TX_BUILD_FAILED);
+        expect(results[1].error.message).toContain("Invalid transaction XDR");
+      }
+
+      // Third transaction succeeds independently
+      expect(results[2]?.status).toBe("ok");
+      if (results[2]?.status === "ok") {
+        expect(results[2].data.valid).toBe(true);
+        expect(results[2].data.fee).toBe("250");
+      }
+    });
+
+    it("handles non-string items safely within batch", async () => {
+      mocks.fromXDR.mockReturnValue(makePaymentTx({ fee: 200 }));
+      mocks.isValidEd25519PublicKey.mockReturnValue(true);
+
+      const xdrs = ["valid-xdr", null as unknown as string, 123 as unknown as string];
+      const results = await validateTransactionBatch(xdrs);
+
+      expect(results).toHaveLength(3);
+      expect(results[0]?.status).toBe("ok");
+      expect(results[1]?.status).toBe("error");
+      expect(results[2]?.status).toBe("error");
+      if (results[1]?.status === "error") {
+        expect(results[1].error.message).toContain("input must be a string");
+      }
+    });
+
+    it("reuses shared validation rules across all transactions", async () => {
+      mocks.fromXDR.mockImplementation((xdr: string) => {
+        if (xdr === "low-fee") return makePaymentTx({ fee: 50 });
+        if (xdr === "high-fee") return makePaymentTx({ fee: 500 });
+        return makePaymentTx({ fee: 300 });
+      });
+      mocks.isValidEd25519PublicKey.mockReturnValue(true);
+
+      const rules: ValidationRules = {
+        minFee: 200,
+        maxFee: 400,
+      };
+
+      const results = await validateTransactionBatch(["low-fee", "high-fee"], rules);
+
+      expect(results).toHaveLength(2);
+
+      // low-fee (50) is below custom minFee (200) -> invalid
+      expect(results[0]?.status).toBe("ok");
+      if (results[0]?.status === "ok") {
+        expect(results[0].data.valid).toBe(false);
+        expect(
+          results[0].data.issues.some((i) => i.message.includes("below the minimum of 200")),
+        ).toBe(true);
+      }
+
+      // high-fee (500) exceeds custom maxFee (400) -> warning (still valid)
+      expect(results[1]?.status).toBe("ok");
+      if (results[1]?.status === "ok") {
+        expect(results[1].data.valid).toBe(true);
+        expect(
+          results[1].data.issues.some((i) => i.message.includes("exceeds the sanity limit of 400")),
+        ).toBe(true);
+      }
+    });
+
+    it("applies custom validation rules across all items in batch", async () => {
+      mocks.fromXDR.mockImplementation((xdr: string) => {
+        if (xdr === "blocked") return makePaymentTx({ fee: 100, destination: "BLOCKED_KEY" });
+        return makePaymentTx({ fee: 100, destination: VALID_PUBLIC_KEY });
+      });
+      mocks.isValidEd25519PublicKey.mockReturnValue(true);
+
+      const customRule = (ctx: TransactionValidationContext) => {
+        const dest = ctx.operations[0]?.destination;
+        if (dest === "BLOCKED_KEY") {
+          return {
+            field: "destination",
+            message: "Destination is blocked",
+            severity: "error" as const,
+          };
+        }
+        return null;
+      };
+
+      const results = await validateTransactionBatch(["blocked", "allowed"], {
+        custom: [customRule],
+      });
+
+      expect(results).toHaveLength(2);
+      if (results[0]?.status === "ok" && results[1]?.status === "ok") {
+        expect(results[0].data.valid).toBe(false);
+        expect(results[0].data.issues.some((i) => i.message === "Destination is blocked")).toBe(true);
+        expect(results[1].data.valid).toBe(true);
+      }
+    });
+  });
 });
+

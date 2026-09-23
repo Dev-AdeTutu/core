@@ -8,6 +8,8 @@ import { toMessage } from "../shared";
 
 const DEFAULT_MIN_FEE_STROOPS = 100;
 const DEFAULT_MAX_FEE_STROOPS = 100_000;
+/** Maximum number of operations allowed per Stellar transaction. */
+export const MAX_OPERATIONS_PER_TRANSACTION = 100;
 
 const KNOWN_NETWORK_PASSPHRASES: Record<string, string> = {
   "Public Global Stellar Network ; September 2015": "mainnet",
@@ -114,6 +116,16 @@ export function validateTransaction(
     });
   }
 
+  // ── Operation count limit ──────────────────────────────────────────────────
+  const opCount = transaction.operations.length;
+  if (opCount > MAX_OPERATIONS_PER_TRANSACTION) {
+    issues.push({
+      field: "operations",
+      message: `Transaction has ${opCount} operations but maximum is ${MAX_OPERATIONS_PER_TRANSACTION}`,
+      severity: "error",
+    });
+  }
+
   // ── Per-operation checks ────────────────────────────────────────────────────
   const parsedOps: ParsedOperation[] = [];
 
@@ -210,3 +222,55 @@ function isFeeBumpTransaction(
 ): tx is FeeBumpTransaction {
   return "innerTransaction" in tx;
 }
+
+/**
+ * Run pre-submission validation checks on multiple transaction XDRs concurrently.
+ *
+ * Validates independent transactions in parallel while reusing shared validation rules.
+ * Each transaction produces its own validation result independently, preserving
+ * the order of the input array. Failures on individual transactions do not abort
+ * the validation of other transactions in the batch.
+ *
+ * @param transactionXdrs - Array of transaction envelope XDR strings.
+ * @param rules           - Optional shared validation rules applied across all transactions.
+ * @returns A promise resolving to an array of validation results matching input order.
+ *
+ * @example
+ * const results = await validateTransactionBatch([xdr1, xdr2], { minFee: 100 });
+ * for (const res of results) {
+ *   if (res.status === "ok") {
+ *     console.log("Valid:", res.data.valid);
+ *   } else {
+ *     console.error("Validation error:", res.error.message);
+ *   }
+ * }
+ */
+export async function validateTransactionBatch(
+  transactionXdrs: string[],
+  rules?: ValidationRules,
+): Promise<SorokitResult<TransactionValidationReport>[]> {
+  if (!Array.isArray(transactionXdrs) || transactionXdrs.length === 0) {
+    return [];
+  }
+
+  return Promise.all(
+    transactionXdrs.map(async (xdr) => {
+      try {
+        if (typeof xdr !== "string") {
+          return err(
+            SorokitErrorCode.TX_BUILD_FAILED,
+            "Invalid transaction XDR: input must be a string",
+          );
+        }
+        return validateTransaction(xdr, rules);
+      } catch (cause) {
+        return err(
+          SorokitErrorCode.TX_BUILD_FAILED,
+          `Invalid transaction XDR: ${toMessage(cause)}`,
+          cause,
+        );
+      }
+    }),
+  );
+}
+

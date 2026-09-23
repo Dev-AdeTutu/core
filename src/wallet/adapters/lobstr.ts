@@ -13,7 +13,12 @@ import type {
 } from "../types";
 import { ok, err, SorokitErrorCode } from "../../shared/response";
 import type { SorokitResult } from "../../shared/response";
-import { isBrowser, toMessage, isUserRejection } from "../../shared";
+import { isBrowser, isNetworkConnectivityError, isTimeoutError, toMessage } from "../../shared";
+import { swkSignTransaction, describeSignFailure } from "./swkSign";
+
+function describeLobstrFailure(action: "connection" | "signing", cause: unknown): string {
+  return describeSignFailure("Lobstr", action, cause);
+}
 
 export class LobstrAdapter implements WalletAdapter {
   readonly walletType = WalletType.LOBSTR;
@@ -37,13 +42,13 @@ export class LobstrAdapter implements WalletAdapter {
     } catch (cause) {
       return err(
         SorokitErrorCode.WALLET_CONNECT_FAILED,
-        `Lobstr connection failed: ${toMessage(cause)}`,
+        describeLobstrFailure("connection", cause),
         cause,
       );
     }
   }
 
-  async disconnect(): Promise<SorokitResult<void>> {
+  async disconnect(): Promise<SorokitResult<undefined>> {
     return ok(undefined);
   }
 
@@ -56,27 +61,6 @@ export class LobstrAdapter implements WalletAdapter {
         "Lobstr requires a browser environment.",
       );
     }
-    try {
-      const { signedTxXdr } = await this.kit.signTransaction(
-        input.transactionXdr,
-        {
-          networkPassphrase: input.networkPassphrase,
-          ...(input.accountToSign !== undefined && {
-            address: input.accountToSign,
-          }),
-        },
-      );
-      return ok(signedTxXdr);
-    } catch (cause) {
-      return err(
-        isUserRejection(cause)
-          ? SorokitErrorCode.WALLET_SIGN_REJECTED
-          : SorokitErrorCode.WALLET_SIGN_FAILED,
-        isUserRejection(cause)
-          ? "User rejected the Lobstr signature request."
-          : `Lobstr signing failed: ${toMessage(cause)}`,
-        cause,
-      );
-    }
+    return swkSignTransaction(this.kit, "Lobstr", input);
   }
 }

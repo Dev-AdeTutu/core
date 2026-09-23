@@ -1,4 +1,4 @@
-import { SorokitErrorCode, ok } from "./response";
+import { SorokitErrorCode, classifyError, defaultRecoveryGuidance, ok } from "./response";
 import type { SorokitError, SorokitResult } from "./response";
 
 /** Maps SDK error codes to consumer-specific strings. Return value replaces error.code at runtime. */
@@ -15,7 +15,10 @@ export function applyCodeTransformer<T>(
   if (result.status === "ok" || !transformer) return result;
   return {
     ...result,
-    error: { ...result.error, code: transformer(result.error.code) as SorokitErrorCode },
+    error: {
+      ...result.error,
+      code: transformer(result.error.code) as SorokitErrorCode,
+    },
   };
 }
 
@@ -48,7 +51,10 @@ export interface ErrorHandler {
    * @param context - Context about where the error occurred
    * @returns Optional recovery action, or undefined to let error propagate normally
    */
-  handle(error: SorokitError, context: ErrorContext): ErrorRecoveryAction | void;
+  handle(
+    error: SorokitError,
+    context: ErrorContext,
+  ): ErrorRecoveryAction | void;
 }
 
 /**
@@ -112,13 +118,20 @@ function getBase64DecodedLength(value: string): number | null {
  * Detect whether a Horizon/RPC error is a 404 (resource not found).
  */
 export function isNotFoundError(cause: unknown): boolean {
+  // Check HTTP status code first (most reliable)
+  const status = getResponseStatus(cause);
+  if (status === 404) {
+    return true;
+  }
+
+  // Then check error message for 404 or "not found"
   if (cause instanceof Error) {
     return (
       cause.message.includes("404") ||
       cause.message.toLowerCase().includes("not found")
     );
   }
-  return getResponseStatus(cause) === 404;
+  return false;
 }
 
 /**
@@ -196,7 +209,11 @@ export function isXdrInvalidError(cause: unknown): boolean {
     if (value.length === 0) return true;
     if (!/^[A-Za-z0-9+/=_-]+$/.test(value)) return true;
     const decodedLength = getBase64DecodedLength(value);
-    if (decodedLength === null || decodedLength === 0 || decodedLength % 4 !== 0) {
+    if (
+      decodedLength === null ||
+      decodedLength === 0 ||
+      decodedLength % 4 !== 0
+    ) {
       return true;
     }
   }
@@ -237,7 +254,14 @@ export function buildError(
   message: string,
   cause?: unknown,
 ): SorokitError {
-  return { code, message, cause };
+  const category = classifyError(code);
+  return {
+    code,
+    message,
+    category,
+    ...(cause !== undefined ? { cause } : {}),
+    recovery: defaultRecoveryGuidance(category),
+  };
 }
 
 /**
@@ -275,5 +299,7 @@ export function withErrorHandling<T>(
   context: ErrorContext,
   fn: () => Promise<SorokitResult<T>>,
 ): Promise<SorokitResult<T>> {
-  return fn().then((result) => applyErrorHandler(result, errorHandler, context));
+  return fn().then((result) =>
+    applyErrorHandler(result, errorHandler, context),
+  );
 }

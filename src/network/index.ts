@@ -1,12 +1,25 @@
 export { resolveNetwork } from "./resolveNetwork";
 export type { NetworkOverrides } from "./resolveNetwork";
+export * from "./fallback";
+
+// ─── Circuit breaker (#186) ────────────────────────────────────────────────────
+export { CircuitBreaker, CircuitBreakerRegistry, CircuitOpenError } from "./circuitBreaker";
+export type {
+  CircuitBreakerConfig,
+  CircuitBreakerMetrics,
+  CircuitState,
+  CircuitStateChangeEvent,
+} from "./circuitBreaker";
 export type { NetworkType, NetworkConfig } from "./types";
-export { NETWORK_DEFAULTS } from "./types";
+export { NETWORK_DEFAULTS } from "./config";
 
 // Keep getNetwork and setNetwork as thin wrappers for backward compat
 // within the codebase — they delegate to resolveNetwork
 export { getNetwork } from "./getNetwork";
 export { setNetwork } from "./setNetwork";
+
+export { NetworkSwitcher } from "./networkSwitcher";
+export type { CustomNetwork, NetworkOption, NetworkInfo, NetworkStatus, NetworkSwitchListener, NetworkStatusListener, NetworkSwitchUnsubscribe, NetworkSwitcherConfig } from "./networkSwitcher";
 
 import { ok } from "../shared/response";
 import type { SorokitResult } from "../shared/response";
@@ -127,3 +140,11 @@ export async function checkNetworkHealth(
 
   return ok({ status, horizon, rpc, issues, recommendations });
 }
+
+export { CongestionMonitor, createCongestionMonitor } from "./congestionMonitor";
+export type {
+  CongestionSample,
+  CongestionMonitorOptions,
+  CongestionLevel,
+  CongestionSnapshot,
+} from "./congestionMonitor";

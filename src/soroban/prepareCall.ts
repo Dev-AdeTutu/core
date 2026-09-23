@@ -14,11 +14,21 @@ import {
   retryWithBackoff,
   toMessage,
 } from "../shared";
-import { DEFAULT_TX_TIMEOUT_SECONDS } from "../shared/constants";
+import { isValidContractId } from "../shared/utils";
+import { DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS } from "../shared/constants";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import type { ContractInvokeParams, PreparedContractCall } from "./types";
-import { validateContractMethodMetadata } from "./contractMetadata";
+import { validateContractMethodMetadata, validateContractArgs } from "./contractMetadata";
 import { validateContractAbi } from "./validateContractAbi";
+import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
+import { CircuitBreakerRegistry } from "../network/circuitBreaker";
+import { optimizeContractArgs } from "./optimizeArgs";
+
+// Shared circuit breaker registry for RPC operations
+const rpcCircuitBreaker = new CircuitBreakerRegistry({
+  failureThreshold: 5,
+  recoveryWindowMs: 30_000,
+});
 
 function describePrepareFailure(cause: unknown): string {
   if (isTimeoutError(cause)) {
@@ -46,6 +56,20 @@ export async function prepareContractCall(
   horizonUrl: string,
   params: ContractInvokeParams,
 ): Promise<SorokitResult<PreparedContractCall>> {
+  if (!isValidContractId(params.contractId)) {
+    return err(
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+      `Invalid contract ID: '${params.contractId}'. Expected a C-prefixed 56-character Stellar base32 string.`,
+    );
+  }
+
+  if (!params.method || params.method.trim().length === 0) {
+    return err(
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+      "Contract method name must not be empty.",
+    );
+  }
+
   const abiValidation = validateContractAbi({
     contractAbi: params.contractAbi,
     method: params.method,
@@ -61,24 +85,63 @@ export async function prepareContractCall(
   );
   if (metadataResult.status === "error") return metadataResult;
 
+  // ─── Visibility, authorization, and argument validation ───────────────
+  if (params.cachedMetadata) {
+    const methodMeta = params.cachedMetadata.find((m) => m.name === params.method);
+
+    if (methodMeta) {
+      // Visibility: reject explicitly non-public methods
+      if (methodMeta.visibility && methodMeta.visibility !== "public") {
+        return err(
+          SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+          `Method '${params.method}' has '${methodMeta.visibility}' visibility and cannot be invoked from the client.`,
+        );
+      }
+
+      // Authorization: validate that the invoking account is authorized
+      if (methodMeta.authorizationRequirements?.requiredSigners) {
+        const required = methodMeta.authorizationRequirements.requiredSigners;
+        if (required.length > 0 && !required.includes(params.publicKey)) {
+          return err(
+            SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+            `Method '${params.method}' requires authorization — the invoking account is not among the authorized signers.`,
+          );
+        }
+      }
+
+      // Argument count and type validation
+      if (params.args?.length) {
+        const argsValidation = validateContractArgs(
+          methodMeta,
+          params.args,
+          SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+        );
+        if (argsValidation.status === "error") return argsValidation;
+      }
+    }
+  }
+
   try {
-    const rpc = new SorobanRpc.Server(rpcUrl);
-    const horizonServer = new Horizon.Server(horizonUrl);
+    const rpc = createSorobanServer(rpcUrl);
+    const horizonServer = createHorizonServer(horizonUrl);
     const contract = new Contract(params.contractId);
 
     const sourceAccount = await horizonServer.loadAccount(params.publicKey);
-    const operation = contract.call(params.method, ...(params.args ?? []));
+    const optimizedArgs = optimizeContractArgs(params.args ?? []).args;
+    const operation = contract.call(params.method, ...optimizedArgs);
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
       networkPassphrase: networkConfig.networkPassphrase,
     })
       .addOperation(operation)
-      .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS)
+      .setTimeout(DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS)
       .build();
 
-    const simResult = await retryWithBackoff(async () => {
-      return await rpc.simulateTransaction(tx);
+    const simResult = await rpcCircuitBreaker.call(rpcUrl, async () => {
+      return await retryWithBackoff(async () => {
+        return await rpc.simulateTransaction(tx);
+      });
     });
 
     if (SorobanRpc.Api.isSimulationError(simResult)) {

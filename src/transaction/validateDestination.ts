@@ -9,6 +9,7 @@ import {
   SorokitErrorCode,
 } from "../shared";
 import type { SorokitResult } from "../shared";
+import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
 
 export interface DestinationValidationResult {
   valid: boolean;
@@ -82,7 +83,7 @@ export async function validateDestination(
 
     try {
       await retryWithBackoff(async () => {
-        const server = new Horizon.Server(options.horizonUrl!);
+        const server = createHorizonServer(options.horizonUrl!);
         return await server.loadAccount(publicKey);
       });
 

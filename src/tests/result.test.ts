@@ -100,3 +100,102 @@ describe("assertOk()", () => {
     );
   });
 });
+
+describe("result wrapper immutability (#286)", () => {
+  describe("ok() wrapper", () => {
+    it("result.data is the same reference as the object passed in", () => {
+      const payload = { value: 42 };
+      const result = ok(payload);
+      expect(result.data).toBe(payload);
+    });
+
+    it("mutating the original object after calling ok() is reflected in result.data (data is not cloned)", () => {
+      const payload: { value: number } = { value: 1 };
+      const result = ok(payload);
+      payload.value = 99;
+      if (result.status === "ok") {
+        expect(result.data.value).toBe(99);
+      }
+    });
+
+    it("the result wrapper is frozen — result.status cannot be reassigned", () => {
+      const result = ok(1);
+      expect(Object.isFrozen(result)).toBe(true);
+      // Attempting to mutate a frozen object silently fails in non-strict mode
+      // and throws a TypeError in strict mode. Either way, the value is unchanged.
+      try { (result as { status: string }).status = "error"; } catch { /* strict mode */ }
+      expect(result.status).toBe("ok");
+    });
+
+    it("result.error remains null on an ok result", () => {
+      const result = ok("hello");
+      expect(result.error).toBeNull();
+    });
+  });
+
+  describe("err() wrapper", () => {
+    it("the err() wrapper is frozen — result.status cannot be reassigned", () => {
+      const result = err(SorokitErrorCode.UNKNOWN, "oops");
+      expect(Object.isFrozen(result)).toBe(true);
+      try { (result as { status: string }).status = "ok"; } catch { /* strict mode */ }
+      expect(result.status).toBe("error");
+    });
+
+    it("result.data is null on an error result", () => {
+      const result = err<string>(SorokitErrorCode.UNKNOWN, "oops");
+      expect(result.data).toBeNull();
+    });
+
+    it("cause object is not frozen — err() does not take ownership of the cause", () => {
+      const cause = { details: "original" };
+      err(SorokitErrorCode.UNKNOWN, "oops", cause);
+      cause.details = "mutated";
+      expect(cause.details).toBe("mutated");
+    });
+  });
+});
+
+describe("SorokitErrorCode exhaustive membership (#268)", () => {
+  it("every enum member has a string value that exactly matches its key name", () => {
+    for (const [key, value] of Object.entries(SorokitErrorCode)) {
+      expect(value).toBe(key);
+    }
+  });
+
+  it("enum contains all expected wallet error codes", () => {
+    const walletCodes = [
+      "WALLET_NOT_FOUND",
+      "WALLET_NOT_CONNECTED",
+      "WALLET_CONNECT_FAILED",
+      "WALLET_SIGN_REJECTED",
+      "WALLET_SIGN_FAILED",
+      "WALLET_BROWSER_ONLY",
+    ];
+    for (const code of walletCodes) {
+      expect(SorokitErrorCode[code as keyof typeof SorokitErrorCode]).toBe(code);
+    }
+  });
+
+  it("enum contains all expected contract error codes", () => {
+    const contractCodes = [
+      "CONTRACT_INVOKE_FAILED",
+      "CONTRACT_READ_FAILED",
+      "CONTRACT_PREPARE_FAILED",
+      "CONTRACT_SIMULATE_FAILED",
+    ];
+    for (const code of contractCodes) {
+      expect(SorokitErrorCode[code as keyof typeof SorokitErrorCode]).toBe(code);
+    }
+  });
+
+  it("enum contains all expected transaction error codes", () => {
+    const txCodes = ["TX_BUILD_FAILED", "TX_SIMULATE_FAILED", "TX_SUBMIT_FAILED", "TX_NOT_FOUND"];
+    for (const code of txCodes) {
+      expect(SorokitErrorCode[code as keyof typeof SorokitErrorCode]).toBe(code);
+    }
+  });
+
+  it("UNKNOWN is the generic fallback code", () => {
+    expect(SorokitErrorCode.UNKNOWN).toBe("UNKNOWN");
+  });
+});

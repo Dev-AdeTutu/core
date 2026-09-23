@@ -4,6 +4,13 @@ import type { SorokitResult } from "../shared/response";
 import { sleep, toMessage, isNotFoundError } from "../shared";
 import type { SorokitLogger } from "../shared/logger";
 import type { TransactionResult, TransactionStatus } from "./types";
+import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
+import {
+  retryStreamingPoll,
+  type StreamingRetryState,
+  type StreamingRetryConfig,
+} from "../shared/utils";
+import { isTransientError } from "../shared/errors";
 
 const MIN_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -23,6 +30,10 @@ function sameSnapshot(a: unknown, b: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+function getLatencyCompensatedDelay(intervalMs: number, requestDurationMs: number): number {
+  return Math.max(MIN_POLL_INTERVAL_MS, intervalMs - requestDurationMs);
 }
 
 /**
@@ -86,6 +97,14 @@ export interface TransactionStreamConfig {
    * If true, emit the current page immediately on start. Default: true.
    */
   emitOnStart?: boolean;
+  /**
+   * Enable automatic retry with exponential backoff for transient network errors.
+   * When enabled, transient errors (timeouts, network issues, 5xx) trigger automatic
+   * retry with exponential backoff (1s, 2s, 4s, 8s, 16s, then 30s max). After 5 consecutive
+   * failures, an error is emitted and polling pauses for 60s before resuming.
+   * Default: true.
+   */
+  enableAutoRetry?: boolean;
 }
 
 /**
@@ -211,10 +230,16 @@ export async function* streamTransactions(
   signal?: AbortSignal,
   logger?: SorokitLogger,
 ): AsyncGenerator<SorokitResult<TransactionPage>> {
-  const baseIntervalMs = Math.max(
-    config?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS,
-    MIN_POLL_INTERVAL_MS,
-  );
+  const requestedInterval = config?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  if (requestedInterval < MIN_POLL_INTERVAL_MS) {
+    const msg = `intervalMs clamped from ${requestedInterval}ms to ${MIN_POLL_INTERVAL_MS}ms`;
+    if (logger) {
+      logger.warn(msg, { operation: "transaction.stream" });
+    } else {
+      console.warn(msg);
+    }
+  }
+  const baseIntervalMs = Math.max(requestedInterval, MIN_POLL_INTERVAL_MS);
   const adaptiveEnabled =
     config?.minIntervalMs !== undefined ||
     config?.maxIntervalMs !== undefined ||
@@ -235,6 +260,15 @@ export async function* streamTransactions(
   const order = config?.order ?? "desc";
   const emitOnStart = config?.emitOnStart ?? true;
 
+  // Retry configuration
+  const retryConfig: StreamingRetryConfig = {
+    enabled: config?.enableAutoRetry ?? true,
+  };
+  let retryState: StreamingRetryState = {
+    consecutiveFailures: 0,
+    inCooldown: false,
+  };
+
   let cursor = config?.cursor;
   let polls = 0;
   let currentIntervalMs = Math.min(
@@ -242,6 +276,7 @@ export async function* streamTransactions(
     maxIntervalMs,
   );
   let unchangedPolls = 0;
+  let nextDelayMs = currentIntervalMs;
 
   const adjustInterval = (changed: boolean): void => {
     if (!adaptiveEnabled) return;
@@ -291,7 +326,7 @@ export async function* streamTransactions(
 
     if (polls > 0 || !emitOnStart) {
       try {
-        await sleep(currentIntervalMs);
+        await sleep(nextDelayMs);
       } catch {
         return;
       }
@@ -299,6 +334,10 @@ export async function* streamTransactions(
 
     if (signal?.aborted) return;
 
+    const pollStartedAt = Date.now();
+    let pollSuccess = false;
+    let errorResult: SorokitResult<TransactionPage> | null = null;
+    
     try {
       logger?.debug("transaction.stream.poll", {
         operation: "transaction.stream.poll",
@@ -308,7 +347,7 @@ export async function* streamTransactions(
         cursor,
       });
 
-      const server = new Horizon.Server(horizonUrl);
+      const server = createHorizonServer(horizonUrl);
 
       let builder = server
         .transactions()
@@ -322,7 +361,7 @@ export async function* streamTransactions(
 
       const page = await builder.call();
 
-      const transactions: TransactionResult[] = page.records.map((tx) => ({
+      const transactions: TransactionResult[] = page.records.map((tx: any) => ({
         hash: tx.hash,
         status: tx.successful ? ("success" as const) : ("failed" as const),
         ledger: tx.ledger_attr,
@@ -350,16 +389,18 @@ export async function* streamTransactions(
       const hasBaseline = lastEmitted !== undefined;
       const changed = !hasBaseline || !sameSnapshot(lastEmitted, transactionPage);
       if (hasBaseline) adjustInterval(changed);
-      cursor = nextCursor ?? cursor;
+      if (nextCursor !== null) cursor = nextCursor;
 
       if (changed) {
         lastEmitted = transactionPage;
         yield ok(transactionPage);
       }
+
+      pollSuccess = true;
     } catch (cause) {
       const code = isNotFoundError(cause)
         ? SorokitErrorCode.ACCOUNT_NOT_FOUND
-        : SorokitErrorCode.TX_SUBMIT_FAILED;
+        : SorokitErrorCode.TX_FETCH_FAILED;
       const message = isNotFoundError(cause)
         ? `Account not found while streaming transactions: ${publicKey}`
         : `Transaction stream poll failed: ${toMessage(cause)}`;
@@ -374,7 +415,52 @@ export async function* streamTransactions(
       });
 
       adjustInterval(false);
-      yield err(code, message, cause);
+      errorResult = err(code, message, cause);
+    }
+
+    // Handle retry logic after poll attempt
+    const isNotFound = errorResult && errorResult.error && errorResult.error.code === SorokitErrorCode.ACCOUNT_NOT_FOUND;
+    const isTransient = errorResult && errorResult.error && !isNotFound ? isTransientError(errorResult.error.cause || errorResult.error) : false;
+    const retryDecision = retryStreamingPoll(
+      pollSuccess,
+      retryState,
+      retryConfig,
+    );
+    retryState = retryDecision.updatedState;
+
+    // Determine if we should yield the error
+    // Yield error if: not found, not a transient error, or we're in cooldown, or auto-retry is disabled
+    const shouldYieldError = errorResult && 
+      (isNotFound || !isTransient || !retryDecision.shouldRetry || retryState.inCooldown);
+
+    // Yield error if needed
+    if (shouldYieldError && errorResult) {
+      yield errorResult;
+    }
+
+    // Calculate next delay
+    if (retryDecision.shouldRetry && isTransient && !retryState.inCooldown) {
+      nextDelayMs = retryDecision.delayMs;
+      logger?.debug("transaction.stream.retry", {
+        operation: "transaction.stream.retry",
+        status: "retrying",
+        publicKey,
+        consecutiveFailures: retryState.consecutiveFailures,
+        delayMs: nextDelayMs,
+      });
+    } else if (retryState.inCooldown) {
+      nextDelayMs = retryDecision.delayMs;
+      logger?.debug("transaction.stream.retry", {
+        operation: "transaction.stream.retry",
+        status: "cooldown",
+        publicKey,
+        delayMs: nextDelayMs,
+      });
+    } else {
+      nextDelayMs = getLatencyCompensatedDelay(
+        currentIntervalMs,
+        Date.now() - pollStartedAt,
+      );
     }
 
     polls++;

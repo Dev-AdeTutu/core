@@ -1,11 +1,42 @@
+export { getWalletCapabilities, WALLET_CAPABILITY_IDS } from "./capabilities";
 export { connectWallet } from "./connect";
 export { disconnectWallet } from "./disconnect";
 export { signTransaction } from "./signTransaction";
-export { FreighterAdapter } from "./adapters/freighter";
-export { XBullAdapter } from "./adapters/xbull";
-export { LobstrAdapter } from "./adapters/lobstr";
+export { signTransactionOffline } from "./signTransactionOffline";
+export { SigningRateLimiter } from "./signingRateLimiter";
+export type { SigningRateLimiterConfig, QueueState } from "./signingRateLimiter";
+export { createSigningChallenge, mergeSignatures } from "./signingDelegation";
+export { FreighterAdapter, XBullAdapter, LobstrAdapter } from "./adapters";
+export { WalletType } from "./types";
+export { generateDeviceFingerprint, evaluateDeviceTrust, DEFAULT_TRUST_THRESHOLD } from "./deviceTrust";
+export type { DeviceSignals, DeviceFingerprint, TrustHistoryEntry, TrustScoreOptions, TrustEvaluation } from "./deviceTrust";
+
+// ─── Wallet connection throttling and abuse detection (#506) ──────────────────
+export {
+  checkThrottle,
+  recordConnectionAttempt,
+  addToAllowlist,
+  addToBlocklist,
+  removeRateLimitRule,
+  getOriginState,
+  resetOriginState,
+  detectAbuse,
+  getConnectionStats,
+  clearThrottlingState,
+} from "./throttlingCore";
 export type {
-  WalletType,
+  ThrottlingConfig,
+  ThrottleCheckResult,
+  OriginRateLimitState,
+  ConnectionAttempt,
+  RateLimitRule,
+  AbuseDetectionResult,
+  ConnectionStats,
+} from "./throttlingTypes";
+export { RateLimitRuleType } from "./throttlingTypes";
+
+import type { PersistenceAdapter } from "./types";
+export type {
   WalletState,
   WalletAdapter,
   SignTransactionInput,
@@ -17,8 +48,14 @@ export type {
   DetectedWallet,
   RecommendationCriteria,
   WalletFeature,
+  ConnectedAccountsResult,
+  AccountSwitchResult,
+  WalletCapability,
+  WalletCapabilityId,
+  WalletCapabilitySource,
+  WalletCapabilities,
+  PersistenceAdapter,
 } from "./types";
-export { WalletType as WalletTypeEnum } from "./types";
 export {
   getSigningHistory,
   exportSigningHistory,
@@ -29,6 +66,12 @@ export type {
   SigningHistoryFilter,
   SigningHistoryStore,
 } from "./signingHistory";
+export type {
+  CreateSigningChallengeOptions,
+  MergeSignaturesResult,
+  SigningChallenge,
+  SigningDelegationSignature,
+} from "./signingDelegation";
 
 import { ok, err, SorokitErrorCode } from "../shared/response";
 import type { SorokitResult } from "../shared/response";
@@ -43,6 +86,12 @@ import type {
   DetectedWallet,
   RecommendationCriteria,
   WalletFeature,
+  ConnectedAccountsResult,
+  AccountSwitchResult,
+  WalletCapability,
+  WalletCapabilityId,
+  WalletCapabilitySource,
+  WalletCapabilities,
 } from "./types";
 import { WalletType } from "./types";
 
@@ -242,9 +291,10 @@ export function recommendWallets(
 ): DetectedWallet[] {
   const detected = detectInstalledWallets(adapters);
   const available = detected.filter((w) => w.available);
-  if (!criteria?.features?.length) return available;
+  const requiredFeatures = criteria?.features;
+  if (!requiredFeatures?.length) return available;
   return available.filter((w) =>
-    criteria.features!.every((f) => w.features.includes(f)),
+    requiredFeatures.every((f) => w.features.includes(f)),
   );
 }
 
@@ -254,6 +304,125 @@ export function recommendWallets(
  */
 export function emptyWalletState(): SorokitResult<WalletState> {
   return ok({ connected: false, publicKey: null, walletType: null });
+}
+
+/**
+ * List all accounts currently accessible from the connected wallet.
+ *
+ * When the adapter implements the optional `getAccounts()` method (signalling
+ * that the underlying wallet / SWK version supports multi-account listing),
+ * that method is called and its results are combined with the currently-active
+ * account returned by `adapter.connect()`.
+ *
+ * When `getAccounts()` is absent, this function falls back gracefully: it calls
+ * `adapter.connect()` and returns a single-item list containing the active account.
+ *
+ * The returned `ConnectedAccountsResult.accounts` array is deduplicated and always
+ * contains at least the active account on success.
+ *
+ * @returns `ok(ConnectedAccountsResult)` on success, or an `error` result when
+ *          the adapter is unavailable or the active account cannot be resolved.
+ *
+ * @example
+ * const result = await listConnectedAccounts(adapter);
+ * if (result.status === "ok") {
+ *   console.log("Active:", result.data.activeAccount);
+ *   console.log("All accounts:", result.data.accounts);
+ * }
+ */
+export async function listConnectedAccounts(
+  adapter: WalletAdapter,
+): Promise<SorokitResult<ConnectedAccountsResult>> {
+  if (!adapter.isAvailable()) {
+    return err(
+      SorokitErrorCode.WALLET_BROWSER_ONLY,
+      `${adapter.walletType} requires a browser environment.`,
+    );
+  }
+
+  // Resolve the currently active account — always required.
+  const activeResult = await adapter.connect();
+  if (activeResult.status === "error") return activeResult;
+  const activeAccount = activeResult.data;
+
+  // If the adapter exposes multi-account listing, use it.
+  if (typeof adapter.getAccounts === "function") {
+    const accountsResult = await adapter.getAccounts();
+    if (accountsResult.status === "error") return accountsResult;
+
+    // Merge, dedup, and ensure the active account is always present.
+    const seen = new Set<string>([activeAccount]);
+    const accounts: string[] = [activeAccount];
+    for (const key of accountsResult.data) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        accounts.push(key);
+      }
+    }
+
+    return ok({ accounts, activeAccount });
+  }
+
+  // Fallback: single-account wallet — return just the active account.
+  return ok({ accounts: [activeAccount], activeAccount });
+}
+
+/**
+ * Switch the wallet's active account to the given public key.
+ *
+ * Requires the adapter to implement the optional `setActiveAccount()` method.
+ * When the method is absent (the wallet does not support programmatic account
+ * switching), the function returns a `WALLET_NOT_FOUND` error with a clear message.
+ *
+ * On success, a fresh `WalletState` reflecting the switched account is returned
+ * alongside the resolved public key.
+ *
+ * @param adapter     - The wallet adapter to operate on.
+ * @param accountKey  - The Stellar public key (G...) to switch to.
+ * @returns `ok(AccountSwitchResult)` on success, or an `error` result.
+ *
+ * @example
+ * const result = await switchAccount(adapter, "GABC...");
+ * if (result.status === "ok") {
+ *   console.log("Now signed in as", result.data.publicKey);
+ * }
+ */
+export async function switchAccount(
+  adapter: WalletAdapter,
+  accountKey: string,
+): Promise<SorokitResult<AccountSwitchResult>> {
+  if (!adapter.isAvailable()) {
+    return err(
+      SorokitErrorCode.WALLET_BROWSER_ONLY,
+      `${adapter.walletType} requires a browser environment.`,
+    );
+  }
+
+  if (typeof adapter.setActiveAccount !== "function") {
+    return err(
+      SorokitErrorCode.WALLET_NOT_FOUND,
+      `${adapter.walletType} does not support programmatic account switching.`,
+    );
+  }
+
+  if (!accountKey || accountKey.trim().length === 0) {
+    return err(
+      SorokitErrorCode.WALLET_CONNECT_FAILED,
+      "switchAccount: accountKey must be a non-empty public key string.",
+    );
+  }
+
+  const switchResult = await adapter.setActiveAccount(accountKey);
+  if (switchResult.status === "error") return switchResult;
+
+  const publicKey = switchResult.data;
+  const walletState: WalletState = {
+    connected: true,
+    publicKey,
+    walletType: adapter.walletType,
+  };
+
+  return ok({ publicKey, walletState });
 }
 
 /**
@@ -430,3 +599,124 @@ export async function diagnoseWalletConnection(
     recommendations,
   });
 }
+
+/**
+ * Create a {@link PersistenceAdapter} backed by `localStorage`.
+ *
+ * Returns `null` when `localStorage` is not available (e.g. in Node or
+ * in a sandboxed iframe).  The default storage key is
+ * `"sorokit:wallet"`.
+ *
+ * @param storageKey - Key under which wallet state is persisted.
+ *
+ * @example
+ * const adapter = createLocalStorageAdapter();
+ * if (adapter) {
+ *   const client = createSorokitClient({ network: "testnet", persistenceAdapter: adapter });
+ * }
+ */
+export function createLocalStorageAdapter(
+  storageKey = "sorokit:wallet",
+): PersistenceAdapter | null {
+  if (
+    typeof globalThis.localStorage === "undefined" ||
+    globalThis.localStorage === null
+  ) {
+    return null;
+  }
+
+  return {
+    save(key: string, value: WalletState): void {
+      try {
+        globalThis.localStorage.setItem(
+          `${storageKey}:${key}`,
+          JSON.stringify(value),
+        );
+      } catch {
+        // Storage quota exceeded or security error — silently ignore
+      }
+    },
+
+    load(key: string): WalletState | null {
+      try {
+        const raw = globalThis.localStorage.getItem(`${storageKey}:${key}`);
+        if (raw === null) return null;
+        const parsed = JSON.parse(raw) as WalletState;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          typeof parsed.connected === "boolean"
+        ) {
+          return parsed;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+
+    clear(key: string): void {
+      try {
+        globalThis.localStorage.removeItem(`${storageKey}:${key}`);
+      } catch {
+        // Silently ignore
+      }
+    },
+  };
+}
+
+export {
+  discoverHardwareWallets,
+  getHardwareWalletPublicKey,
+  signTransactionWithHardwareWallet,
+} from "./hardwareWallet";
+export type {
+  HardwareWalletAdapter,
+  HardwareWalletDevice,
+  HardwareWalletCapabilities,
+} from "./hardwareWallet";
+
+export { auditWalletSecurity, isHighRiskConnection } from "./securityAudit";
+export type {
+  RiskSeverity,
+  RiskConfidence,
+  RiskFactor,
+  WalletVulnerability,
+  VulnerabilitySource,
+  WalletConnectionContext,
+  WalletSecurityAuditOptions,
+  RiskLevel,
+  WalletSecurityReport,
+} from "./securityAudit";
+
+// Authentication module exports
+export {
+  WalletAuthenticationManager,
+  detectAuthenticationCapabilities,
+  isAuthenticationMethodAvailable,
+  setupPIN,
+  verifyPIN,
+  changePIN,
+  resetPIN,
+  registerWebAuthn,
+  authenticateWebAuthn,
+  InMemoryAuthenticationStorage,
+  createLocalStorageAuthenticationStorage,
+} from "./authentication";
+export type {
+  AuthenticationState,
+  AuthenticationMethod,
+  AuthenticationStatus,
+  AuthenticationConfig,
+  AuthenticationCredential,
+  AuthenticationCapabilities,
+  AuthenticationStorage,
+  PINSetupOptions,
+  PINVerificationOptions,
+  PINChangeOptions,
+  PINResetResult,
+  PINCredentialData,
+  WebAuthnRegistrationOptions,
+  WebAuthnAuthenticationOptions,
+  WebAuthnCredentialData,
+} from "./authentication";

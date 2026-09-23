@@ -35,6 +35,16 @@ export async function connectWallet(
   const result = await adapter.connect();
   if (result.status === "error") return result;
 
+  // Validate that the adapter returned a non-empty public key string (#267).
+  // An empty string (e.g. from an installed wallet without a configured account)
+  // is invalid for downstream Stellar operations and should fail immediately.
+  if (!result.data || typeof result.data !== "string" || result.data === "") {
+    return err(
+      SorokitErrorCode.WALLET_CONNECT_FAILED,
+      "Wallet returned an empty public key.",
+    );
+  }
+
   const state: WalletState = {
     connected: true,
     publicKey: result.data,

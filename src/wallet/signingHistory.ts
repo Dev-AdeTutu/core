@@ -77,22 +77,27 @@ export function getSigningHistory(
 }
 
 /**
- * Export signing history records as JSON or CSV.
+ * Export signing history records as JSON or CSV with optional filtering.
  *
- * @param records - Records to export (typically from `getSigningHistory`).
+ * @param store - The signing history store to query.
  * @param format - Output format: `"json"` or `"csv"`.
- * @returns Formatted string.
+ * @param filter - Optional filter criteria (date range, signer, status).
+ * @returns Formatted string with filtered records.
  *
  * @example
- * const exported = exportSigningHistory(records, "csv");
+ * const exported = exportSigningHistory(store, "csv", { status: "failure" });
  */
 export function exportSigningHistory(
-  records: SigningRecord[],
+  store: SigningHistoryStore,
   format: "json" | "csv",
+  filter?: SigningHistoryFilter,
 ): SorokitResult<string> {
+  const records = store.query(filter);
+  
   if (format === "json") {
     return ok(JSON.stringify(records, null, 2));
   }
+  
   const header = "txHash,signer,timestamp,status,error";
   const rows = records.map((r) =>
     [r.txHash, r.signer, r.timestamp, r.status, r.error ?? ""].join(","),
