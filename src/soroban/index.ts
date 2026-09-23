@@ -33,6 +33,16 @@ export {
   queryContractEvents,
   streamContractEvents,
 } from "./subscribeContractEvents";
+export { streamContractEventsRealTime } from "./streamContractEventsRealTime";
+export type {
+  StreamContractEventsRealTimeOptions,
+} from "./streamContractEventsRealTime";
+export {
+  EventIndex,
+  filterNewEvents,
+  hashEvent,
+  hashString,
+} from "./eventIndex";
 export {
   getContractMethods,
   parseContractSchema,
