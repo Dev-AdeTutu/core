@@ -79,6 +79,10 @@ export {
   buildPathPayment,
   buildAtomicSwap,
   buildAccountMerge,
+  buildManageOfferTransaction,
+  buildClawbackTransaction,
+  buildLiquidityPoolDepositTransaction,
+  buildLiquidityPoolWithdrawTransaction,
 } from "./buildTransaction";
 export type { AccountMergeOptions } from "./buildTransaction";
 export { submitTransaction } from "./submitTransaction";
@@ -103,6 +107,10 @@ export type {
   PathPaymentParams,
   PathPaymentMode,
   AtomicSwapParams,
+  ManageOfferParams,
+  ClawbackParams,
+  LiquidityPoolDepositParams,
+  LiquidityPoolWithdrawParams,
 } from "./types";
 export type {
   FeeEstimate,

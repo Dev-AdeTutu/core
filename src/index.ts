@@ -60,6 +60,7 @@ export type {
 // ─── Account types ────────────────────────────────────────────────────────────
 export { evaluateBalanceAlerts } from "./account/balanceAlerts";
 export { getAccountsBatch } from "./account/getAccountsBatch";
+export { getOperations } from "./account/getOperations";
 export type { AssetBalanceFilter } from "./account/getAssetBalances";
 export { getMultipleAssetBalances } from "./account/getMultipleAssetBalances";
 export type { MultipleAssetBalancesResult } from "./account/getMultipleAssetBalances";
@@ -71,6 +72,10 @@ export type {
   BalanceAlert,
   BalanceAlertCondition,
   BalanceAlertRule,
+  OperationType,
+  OperationInfo,
+  OperationsPage,
+  GetOperationsOptions,
 } from "./account/types";
 
 // ─── Transaction validation ───────────────────────────────────────────────────
@@ -116,6 +121,10 @@ export {
   buildPathPayment,
   checkTrustlines,
   buildBulkTrustlines,
+  buildManageOfferTransaction,
+  buildClawbackTransaction,
+  buildLiquidityPoolDepositTransaction,
+  buildLiquidityPoolWithdrawTransaction,
 } from "./transaction/index";
 export type {
   TransactionPage,
@@ -131,6 +140,10 @@ export type { AccountMergeOptions } from "./transaction";
 export type {
   AccountCreateParams,
   AtomicSwapParams,
+  ManageOfferParams,
+  ClawbackParams,
+  LiquidityPoolDepositParams,
+  LiquidityPoolWithdrawParams,
   PathPaymentMode,
   PathPaymentParams,
   PaymentParams,

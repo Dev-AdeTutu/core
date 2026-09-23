@@ -106,4 +106,106 @@ export interface AtomicSwapParams extends MemoParams {
   legB: PathPaymentParams;
 }
 
+export interface ManageOfferParams extends MemoParams {
+  /**
+   * Asset being sold. Omit or set to "XLM" for the native asset.
+   */
+  sellingAssetCode?: string;
+  sellingAssetIssuer?: string;
+  /**
+   * Asset being bought. Omit or set to "XLM" for the native asset.
+   */
+  buyingAssetCode?: string;
+  buyingAssetIssuer?: string;
+  /**
+   * Amount of the selling asset to offer. Set to "0" (with a non-zero offerId)
+   * to cancel an existing offer.
+   */
+  amount: string;
+  /**
+   * Price of 1 unit of the selling asset expressed in the buying asset.
+   * Accepts a decimal string ("1.5") or an exact rational ({ n: 3, d: 2 }).
+   */
+  price: string | { n: number; d: number };
+  /**
+   * Offer ID:
+   *   - "0" (default) — create a new offer.
+   *   - Non-zero string — update or cancel an existing offer.
+   */
+  offerId?: string;
+  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
+  autoFetchSequence?: boolean;
+}
+
+export interface ClawbackParams extends MemoParams {
+  /**
+   * Asset code to clawback. Must be a non-native issued asset (1–12 alphanumeric chars).
+   */
+  assetCode: string;
+  /**
+   * G-address of the asset issuer. The transaction source account must match this address.
+   */
+  assetIssuer: string;
+  /**
+   * G-address of the account to clawback from.
+   */
+  from: string;
+  /**
+   * Amount to clawback. Must be positive with at most 7 decimal places.
+   */
+  amount: string;
+  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
+  autoFetchSequence?: boolean;
+}
+
+export interface LiquidityPoolDepositParams extends MemoParams {
+  /**
+   * 64-character hex ID of the liquidity pool to deposit into.
+   */
+  liquidityPoolId: string;
+  /**
+   * Maximum amount of asset A to deposit. Must be positive, ≤7 decimal places.
+   */
+  maxAmountA: string;
+  /**
+   * Maximum amount of asset B to deposit. Must be positive, ≤7 decimal places.
+   */
+  maxAmountB: string;
+  /**
+   * Minimum price (A/B ratio) acceptable for the deposit.
+   * Accepts a decimal string ("0.4") or a rational ({ n: 2, d: 5 }).
+   * Must be positive and less than maxPrice.
+   */
+  minPrice: string | { n: number; d: number };
+  /**
+   * Maximum price (A/B ratio) acceptable for the deposit.
+   * Accepts a decimal string ("0.6") or a rational ({ n: 3, d: 5 }).
+   * Must be positive and greater than minPrice.
+   */
+  maxPrice: string | { n: number; d: number };
+  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
+  autoFetchSequence?: boolean;
+}
+
+export interface LiquidityPoolWithdrawParams extends MemoParams {
+  /**
+   * 64-character hex ID of the liquidity pool to withdraw from.
+   */
+  liquidityPoolId: string;
+  /**
+   * Number of pool shares to redeem. Must be positive, ≤7 decimal places.
+   */
+  amount: string;
+  /**
+   * Minimum amount of asset A to receive. Must be positive, ≤7 decimal places.
+   */
+  minAmountA: string;
+  /**
+   * Minimum amount of asset B to receive. Must be positive, ≤7 decimal places.
+   */
+  minAmountB: string;
+  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
+  autoFetchSequence?: boolean;
+}
+
 export type { FeeEstimate, FeeEstimateOptions } from "./estimateFee";
