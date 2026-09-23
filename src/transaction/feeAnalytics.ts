@@ -63,20 +63,21 @@ export function analyzeFeeHistory(
     .filter((f) => Number.isFinite(f) && f >= 0)
     .sort((a, b) => a - b);
 
-  if (fees.length === 0) return null;
+  // Basic stats. The explicit undefined checks (rather than non-null
+  // assertions) keep the empty-window case honest under
+  // noUncheckedIndexedAccess.
+  const min = fees[0];
+  const max = fees[fees.length - 1];
+  if (min === undefined || max === undefined) return null;
 
-  // Basic stats
-  const min = fees[0]!;
-  const max = fees[fees.length - 1]!;
   const sum = fees.reduce((acc, f) => acc + f, 0);
   const avg = sum / fees.length;
 
-  // Median
+  // Median (fees is sorted and non-empty here)
   const medianIndex = Math.floor(fees.length / 2);
-  const median =
-    fees.length % 2 === 0
-      ? (fees[medianIndex - 1]! + fees[medianIndex]!) / 2
-      : fees[medianIndex]!;
+  const upper = fees[medianIndex] ?? min;
+  const lower = fees[medianIndex - 1] ?? upper;
+  const median = fees.length % 2 === 0 ? (lower + upper) / 2 : upper;
 
   // Standard deviation
   const variance =

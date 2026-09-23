@@ -4,33 +4,13 @@ import type { SorokitResult } from "../shared/response";
 import { isUserRejection, toMessage } from "../shared";
 import type { WalletAdapter, SignTransactionInput } from "./types";
 import type { SigningHistoryStore } from "./signingHistory";
+import type { SigningRateLimiter } from "./signingRateLimiter";
 
 function deriveTxHash(xdr: string, networkPassphrase: string): string {
   return createHash("sha256").update(networkPassphrase + xdr).digest("hex");
 }
 
-/**
- * Sign a transaction XDR using the provided wallet adapter.
- *
- * The adapter handles wallet-specific signing logic and user rejection detection.
- * This function only enforces the browser guard before delegating.
- *
- * Returns `SorokitResult<string>` in all code paths — never throws.
- * - User rejection → `{ status: 'error', error: { code: 'WALLET_SIGN_REJECTED' } }`
- * - Adapter/network failure → `{ status: 'error', error: { code: 'WALLET_SIGN_FAILED' } }`
- * - Success → `{ status: 'ok', data: signedXdr }` where `signedXdr` is accepted
- *   directly by `submitTransaction()` without additional transformation.
- *
- * When `historyStore` is provided every signing attempt — success or failure —
- * is recorded with the transaction hash, signer address, ISO-8601 timestamp,
- * and outcome. History tracking is fully opt-in; omitting the parameter leaves
- * existing behaviour unchanged.
- *
- * @param adapter - Wallet adapter to sign with.
- * @param input - Transaction XDR and network passphrase.
- * @param historyStore - Optional store to record the signing attempt.
- */
-export async function signTransaction(
+async function performSignTransaction(
   adapter: WalletAdapter,
   input: SignTransactionInput,
   historyStore?: SigningHistoryStore,
@@ -73,7 +53,13 @@ export async function signTransaction(
       : `Signing failed: ${toMessage(cause)}`;
 
     if (historyStore) {
-      historyStore.record({ txHash, signer, timestamp, status: "failure", error: msg });
+      historyStore.record({
+        txHash,
+        signer,
+        timestamp,
+        status: "failure",
+        error: msg,
+      });
     }
 
     return err(
@@ -84,4 +70,30 @@ export async function signTransaction(
       cause,
     );
   }
+}
+
+/**
+ * Sign a transaction XDR using the provided wallet adapter.
+ *
+ * Supports optional signing rate limiting and execution history recording.
+ *
+ * @param adapter      - Wallet adapter to sign with.
+ * @param input        - Transaction XDR and network passphrase.
+ * @param historyStore - Optional store to record the signing attempt.
+ * @param rateLimiter  - Optional rate limiter to queue signing prompts.
+ */
+export async function signTransaction(
+  adapter: WalletAdapter,
+  input: SignTransactionInput,
+  historyStore?: SigningHistoryStore,
+  rateLimiter?: SigningRateLimiter,
+): Promise<SorokitResult<string>> {
+  if (rateLimiter) {
+    const { promise } = rateLimiter.enqueue(() =>
+      performSignTransaction(adapter, input, historyStore),
+    );
+    return promise;
+  }
+
+  return performSignTransaction(adapter, input, historyStore);
 }

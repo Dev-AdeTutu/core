@@ -1,8 +1,11 @@
 /**
- * Webhook support for transaction events.
- * 
- * Allows external services to be notified when transactions complete or fail.
- * Supports HMAC-SHA256 signature verification for security.
+ * Webhook support for transaction lifecycle events.
+ *
+ * Allows external services to be notified when transactions are submitted,
+ * confirmed, fail, or time out. Supports HMAC-SHA256 signature verification
+ * for security, bounded exponential backoff on delivery failures, and a
+ * fire-and-forget dispatch path so webhook delivery can never block or fail
+ * the underlying transaction flow.
  */
 
 import { ok, err, SorokitErrorCode } from "../shared/response";
@@ -10,17 +13,61 @@ import type { SorokitResult } from "../shared/response";
 import { sleep } from "../shared/utils";
 import type { TransactionResult } from "./types";
 
+export type { TransactionResult } from "./types";
+
 /**
- * Supported webhook event types.
+ * Canonical transaction lifecycle event types.
  */
-export type WebhookEventType = "submitted" | "confirmed" | "failed";
+export type TransactionWebhookEvent =
+  | "tx_submitted"
+  | "tx_confirmed"
+  | "tx_failed"
+  | "tx_timeout";
+
+/**
+ * Legacy event names accepted for backward compatibility and normalized to
+ * their canonical `tx_*` equivalents.
+ */
+export type LegacyWebhookEventType = "submitted" | "confirmed" | "failed";
+
+/**
+ * Supported webhook event types (canonical or legacy).
+ */
+export type WebhookEventType = TransactionWebhookEvent | LegacyWebhookEventType;
+
+const CANONICAL_EVENTS: readonly TransactionWebhookEvent[] = [
+  "tx_submitted",
+  "tx_confirmed",
+  "tx_failed",
+  "tx_timeout",
+];
+
+const LEGACY_EVENT_MAP: Record<LegacyWebhookEventType, TransactionWebhookEvent> = {
+  submitted: "tx_submitted",
+  confirmed: "tx_confirmed",
+  failed: "tx_failed",
+};
+
+/**
+ * Normalize a (possibly legacy) event name to its canonical form.
+ * Returns `undefined` for unknown event names.
+ */
+function normalizeEvent(event: string): TransactionWebhookEvent | undefined {
+  if ((CANONICAL_EVENTS as readonly string[]).includes(event)) {
+    return event as TransactionWebhookEvent;
+  }
+  if (event in LEGACY_EVENT_MAP) {
+    return LEGACY_EVENT_MAP[event as LegacyWebhookEventType];
+  }
+  return undefined;
+}
 
 /**
  * Webhook registration configuration.
  */
 export interface WebhookRegistration {
-  /** Event type to subscribe to */
-  event: WebhookEventType;
+  /** Canonical event type subscribed to */
+  event: TransactionWebhookEvent;
   /** URL to send webhook payloads to */
   url: string;
   /** Secret key for HMAC signature verification (generate securely!) */
@@ -28,19 +75,33 @@ export interface WebhookRegistration {
 }
 
 /**
+ * Additional transaction details included in webhook payloads when known.
+ */
+export interface WebhookEventDetails {
+  /** Ledger close time of the transaction, when known */
+  createdAt?: string;
+  /** Fee charged, in stroops, when known */
+  fee?: string;
+}
+
+/**
  * Webhook payload sent to registered URLs.
  */
 export interface WebhookPayload {
-  /** Event type */
-  event: WebhookEventType;
+  /** Canonical event type */
+  event: TransactionWebhookEvent;
   /** Transaction hash */
+  txHash: string;
+  /** @deprecated Alias of `txHash`, kept for backward compatibility */
   hash: string;
   /** Transaction status */
   status: string;
   /** Ledger sequence (if confirmed) */
   ledger: number | undefined;
-  /** Timestamp */
+  /** ISO-8601 timestamp of when the event was emitted */
   timestamp: string;
+  /** Additional transaction details, when known */
+  details: WebhookEventDetails;
   /** HMAC-SHA256 signature (hex) */
   signature: string;
 }
@@ -52,60 +113,107 @@ export interface WebhookPayload {
 const webhookRegistry = new Map<string, WebhookRegistration>();
 
 /**
- * Generate a unique key for webhook registration.
+ * Generate a unique key for webhook registration. One entry exists per
+ * (event, url) pair, so re-registering the same pair overwrites rather than
+ * duplicating.
  */
-function webhookKey(event: WebhookEventType, url: string): string {
+function webhookKey(event: TransactionWebhookEvent, url: string): string {
   return `${event}:${url}`;
 }
 
-/**
- * Register a webhook for transaction events.
- * 
- * @param event - Event type to subscribe to
- * @param url - URL to send webhook payloads to
- * @param secret - Secret key for HMAC signature verification (use secure random!)
- * @returns ok(void) on success, error on invalid input
- * 
- * @example
- * const result = registerWebhook("confirmed", "https://example.com/webhook", "secure-random-secret");
- */
-export function registerWebhook(
-  event: WebhookEventType,
-  url: string,
-  secret: string,
-): SorokitResult<void> {
-  if (!event || !["submitted", "confirmed", "failed"].includes(event)) {
-    return err(
-      SorokitErrorCode.INVALID_CONFIG,
-      `Invalid event type: ${event}. Must be one of: submitted, confirmed, failed`,
-    );
-  }
-
+function validateUrl(url: string): SorokitResult<void> | undefined {
   if (!url || typeof url !== "string") {
     return err(
       SorokitErrorCode.INVALID_CONFIG,
       "URL must be a non-empty string",
     );
   }
-
   try {
     new URL(url);
   } catch {
-    return err(
-      SorokitErrorCode.INVALID_CONFIG,
-      `Invalid URL: ${url}`,
-    );
+    return err(SorokitErrorCode.INVALID_CONFIG, `Invalid URL: ${url}`);
   }
+  return undefined;
+}
 
+function validateSecret(secret: string): SorokitResult<void> | undefined {
   if (!secret || typeof secret !== "string" || secret.length < 32) {
     return err(
       SorokitErrorCode.INVALID_CONFIG,
       "Secret must be a non-empty string with at least 32 characters",
     );
   }
+  return undefined;
+}
 
-  const key = webhookKey(event, url);
-  webhookRegistry.set(key, { event, url, secret });
+/**
+ * Register a webhook endpoint for one or more transaction lifecycle events.
+ *
+ * @param url - URL to send webhook payloads to
+ * @param events - Event types to subscribe the URL to
+ * @param secret - Secret key for HMAC signature verification (use secure random!)
+ * @returns ok(void) on success, error on invalid input
+ *
+ * @example
+ * const result = registerWebhook(
+ *   "https://example.com/webhook",
+ *   ["tx_confirmed", "tx_failed"],
+ *   "secure-random-secret-key-32-chars-min",
+ * );
+ */
+export function registerWebhook(
+  url: string,
+  events: WebhookEventType[],
+  secret: string,
+): SorokitResult<void>;
+/**
+ * Register a webhook for a single transaction event (legacy signature).
+ *
+ * @deprecated Prefer `registerWebhook(url, events, secret)`.
+ */
+export function registerWebhook(
+  event: WebhookEventType,
+  url: string,
+  secret: string,
+): SorokitResult<void>;
+export function registerWebhook(
+  first: string,
+  second: WebhookEventType[] | string,
+  secret: string,
+): SorokitResult<void> {
+  const url = Array.isArray(second) ? first : second;
+  const rawEvents = Array.isArray(second) ? second : [first];
+
+  if (Array.isArray(second) && second.length === 0) {
+    return err(
+      SorokitErrorCode.INVALID_CONFIG,
+      "At least one event type must be provided",
+    );
+  }
+
+  const normalized: TransactionWebhookEvent[] = [];
+  for (const rawEvent of rawEvents) {
+    const event = normalizeEvent(rawEvent);
+    if (!event) {
+      return err(
+        SorokitErrorCode.INVALID_CONFIG,
+        `Invalid event type: ${rawEvent}. Must be one of: ${CANONICAL_EVENTS.join(", ")} (legacy: submitted, confirmed, failed)`,
+      );
+    }
+    normalized.push(event);
+  }
+
+  const urlError = validateUrl(url);
+  if (urlError) return urlError;
+
+  const secretError = validateSecret(secret);
+  if (secretError) return secretError;
+
+  // De-duplicated by construction: repeated events in the list and repeated
+  // registrations of the same (event, url) pair collapse to a single entry.
+  for (const event of normalized) {
+    webhookRegistry.set(webhookKey(event, url), { event, url, secret });
+  }
 
   return ok(undefined);
 }
@@ -117,7 +225,15 @@ export function unregisterWebhook(
   event: WebhookEventType,
   url: string,
 ): SorokitResult<void> {
-  const key = webhookKey(event, url);
+  const normalized = normalizeEvent(event);
+  if (!normalized) {
+    return err(
+      SorokitErrorCode.INVALID_CONFIG,
+      `Invalid event type: ${event}`,
+    );
+  }
+
+  const key = webhookKey(normalized, url);
   if (!webhookRegistry.has(key)) {
     return err(
       SorokitErrorCode.INVALID_CONFIG,
@@ -133,9 +249,12 @@ export function unregisterWebhook(
  * List all registered webhooks for an event type.
  */
 export function listWebhooks(event: WebhookEventType): WebhookRegistration[] {
+  const normalized = normalizeEvent(event);
+  if (!normalized) return [];
+
   const results: WebhookRegistration[] = [];
-  for (const [key, registration] of webhookRegistry.entries()) {
-    if (registration.event === event) {
+  for (const registration of webhookRegistry.values()) {
+    if (registration.event === normalized) {
       results.push(registration);
     }
   }
@@ -150,16 +269,29 @@ export function clearWebhooks(): void {
 }
 
 /**
+ * Copy encoded bytes into a plain ArrayBuffer so WebCrypto accepts them
+ * regardless of whether the runtime backs Uint8Array with a SharedArrayBuffer.
+ */
+function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(data.byteLength);
+  new Uint8Array(copy).set(data);
+  return copy;
+}
+
+/**
  * Generate HMAC-SHA256 signature for webhook payload.
- * 
+ *
  * @param payload - JSON stringified payload (without signature field)
  * @param secret - Secret key for HMAC
  * @returns Hex-encoded signature
  */
-async function generateSignature(payload: string, secret: string): Promise<string> {
+async function generateSignature(
+  payload: string,
+  secret: string,
+): Promise<string> {
   const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const payloadData = encoder.encode(payload);
+  const keyData = toArrayBuffer(encoder.encode(secret));
+  const payloadData = toArrayBuffer(encoder.encode(payload));
 
   const cryptoKey = await globalThis.crypto.subtle.importKey(
     "raw",
@@ -182,7 +314,7 @@ async function generateSignature(payload: string, secret: string): Promise<strin
 
 /**
  * Verify HMAC-SHA256 signature for webhook payload.
- * 
+ *
  * @param payload - JSON stringified payload (without signature field)
  * @param signature - Hex-encoded signature to verify
  * @param secret - Secret key for HMAC
@@ -197,9 +329,12 @@ export async function verifySignature(
   return signature === expectedSignature;
 }
 
+/** Maximum backoff delay between retry attempts. */
+const MAX_BACKOFF_MS = 8000;
+
 /**
- * Send webhook payload with retry logic.
- * 
+ * Send webhook payload with bounded exponential backoff retry logic.
+ *
  * @param registration - Webhook registration
  * @param payload - Payload to send
  * @param maxRetries - Maximum retry attempts (default: 3)
@@ -233,11 +368,11 @@ async function sendWebhookWithRetry(
       return ok(undefined);
     } catch (error) {
       lastError = error;
-      
-      // Don't retry on the last attempt
+
+      // Don't sleep after the last attempt
       if (attempt < maxRetries) {
-        // Exponential backoff: 1s, 2s, 4s
-        const delayMs = 1000 * Math.pow(2, attempt);
+        // Bounded exponential backoff: 1s, 2s, 4s, capped at MAX_BACKOFF_MS
+        const delayMs = Math.min(1000 * Math.pow(2, attempt), MAX_BACKOFF_MS);
         await sleep(delayMs);
       }
     }
@@ -251,9 +386,12 @@ async function sendWebhookWithRetry(
 }
 
 /**
- * Trigger webhooks for a transaction event.
- * 
- * @param event - Event type
+ * Trigger webhooks for a transaction event and wait for delivery results.
+ *
+ * Deliveries to multiple registered endpoints run concurrently; each result
+ * is reported independently so one failing endpoint cannot mask another.
+ *
+ * @param event - Event type (canonical or legacy)
  * @param transaction - Transaction result
  * @returns Array of results for each webhook (ok or error)
  */
@@ -261,34 +399,72 @@ export async function triggerWebhooks(
   event: WebhookEventType,
   transaction: TransactionResult,
 ): Promise<SorokitResult<void>[]> {
-  const registrations = listWebhooks(event);
+  const normalized = normalizeEvent(event);
+  if (!normalized) return [];
+
+  const registrations = listWebhooks(normalized);
   if (registrations.length === 0) {
     return [];
   }
 
-  const results: SorokitResult<void>[] = [];
+  const details: WebhookEventDetails = {
+    ...(transaction.createdAt !== undefined
+      ? { createdAt: transaction.createdAt }
+      : {}),
+    ...(transaction.fee !== undefined ? { fee: transaction.fee } : {}),
+  };
 
-  for (const registration of registrations) {
-    // Create payload without signature
-    const payloadWithoutSignature = {
-      event,
-      hash: transaction.hash,
-      status: transaction.status,
-      ledger: transaction.ledger,
-      timestamp: new Date().toISOString(),
-    };
+  return Promise.all(
+    registrations.map(async (registration) => {
+      // Create payload without signature
+      const payloadWithoutSignature = {
+        event: normalized,
+        txHash: transaction.hash,
+        hash: transaction.hash,
+        status: transaction.status,
+        ledger: transaction.ledger,
+        timestamp: new Date().toISOString(),
+        details,
+      };
 
-    const payloadString = JSON.stringify(payloadWithoutSignature);
-    const signature = await generateSignature(payloadString, registration.secret);
+      const payloadString = JSON.stringify(payloadWithoutSignature);
+      const signature = await generateSignature(
+        payloadString,
+        registration.secret,
+      );
 
-    const payload: WebhookPayload = {
-      ...payloadWithoutSignature,
-      signature,
-    };
+      const payload: WebhookPayload = {
+        ...payloadWithoutSignature,
+        signature,
+      };
 
-    const result = await sendWebhookWithRetry(registration, payload);
-    results.push(result);
+      return sendWebhookWithRetry(registration, payload);
+    }),
+  );
+}
+
+/**
+ * Fire-and-forget dispatch of a transaction lifecycle event to registered
+ * webhooks.
+ *
+ * Unlike {@link triggerWebhooks}, this never throws, never rejects, and does
+ * not block the caller on delivery or retries — transaction processing must
+ * proceed regardless of webhook endpoint health. Delivery failures are
+ * reported per-endpoint by `triggerWebhooks` and intentionally swallowed
+ * here.
+ *
+ * @param event - Event type (canonical or legacy)
+ * @param transaction - Transaction result
+ */
+export function dispatchTransactionEvent(
+  event: WebhookEventType,
+  transaction: TransactionResult,
+): void {
+  try {
+    void triggerWebhooks(event, transaction).catch(() => {
+      // Swallow: webhook delivery must never surface into transaction flow.
+    });
+  } catch {
+    // Defensive: even synchronous failures must not propagate.
   }
-
-  return results;
 }

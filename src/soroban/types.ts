@@ -14,10 +14,59 @@ export interface ContractMethodInput {
   type: string;
 }
 
+export interface ContractAbiField {
+  name: string;
+  type: string | ContractAbiTypeDescriptor;
+}
+
+export interface ContractAbiTypeDescriptor {
+  type: string;
+  valueType?: string | ContractAbiTypeDescriptor;
+  keyType?: string | ContractAbiTypeDescriptor;
+  elementType?: string | ContractAbiTypeDescriptor;
+  fields?: ContractAbiField[];
+  variants?: ContractAbiField[];
+}
+
+/**
+ * Visibility level of a contract method.
+ * - "public"   — callable by any account
+ * - "private"  — callable only from within the contract
+ * - "admin"    — callable only by designated admin accounts
+ * - "restricted" — callable only by accounts meeting authorization requirements
+ */
+export type ContractMethodVisibility =
+  | "public"
+  | "private"
+  | "admin"
+  | "restricted";
+
+/**
+ * Authorization requirements for a contract method.
+ * When present, `prepareCall()` validates that the invoking account
+ * satisfies these requirements before constructing the invocation.
+ */
+export interface ContractAuthorizationRequirement {
+  /** List of public keys authorized to call this method. */
+  requiredSigners?: string[];
+}
+
 export interface ContractMethod {
   name: string;
   inputs: ContractMethodInput[];
   returnType: string | null;
+  /**
+   * Optional visibility declaration. When absent, the method is treated as
+   * callable — existing contracts that do not expose visibility metadata
+   * remain compatible with the current behavior.
+   */
+  visibility?: ContractMethodVisibility;
+  /**
+   * Optional authorization requirements. Validated against the invoking
+   * public key when available. Not exposed in error messages to avoid
+   * leaking sensitive authorization data.
+   */
+  authorizationRequirements?: ContractAuthorizationRequirement;
 }
 
 export interface ContractAbiMethod {
@@ -71,6 +120,8 @@ export interface ContractReadParams {
   publicKey: string;
   /** Optional cache for contract read results */
   cache?: import("../shared/cache").SorokitCache;
+  /** Bypass cache lookup, deduplication, and writes for this request */
+  bypassCache?: boolean;
   /** Optional tracker for cache invalidation based on contract state changes */
   stateTracker?: ContractStateTracker;
   /** Optional TTL for cache entries in milliseconds (default: 5 minutes) */
@@ -118,6 +169,29 @@ export interface SimulateTransactionResult {
   success: boolean;
   /** Error message if simulation failed */
   error?: string;
+  /** Detailed ledger resource usage returned by Soroban RPC, when available */
+  resourceUsage?: SorobanSimulationResourceUsage;
+  /** Fee components derived from the RPC simulation response */
+  feeBreakdown?: SorobanSimulationFeeBreakdown;
+}
+
+export interface SorobanSimulationResourceUsage {
+  instructions?: string;
+  readBytes?: number;
+  writeBytes?: number;
+  readLedgerEntries?: number;
+  writeLedgerEntries?: number;
+  footprint?: {
+    readOnly?: number;
+    readWrite?: number;
+  };
+}
+
+export interface SorobanSimulationFeeBreakdown {
+  minResourceFee: string;
+  refundableFee?: string;
+  nonRefundableFee?: string;
+  total?: string;
 }
 
 /** A single contract invocation in a batch. */

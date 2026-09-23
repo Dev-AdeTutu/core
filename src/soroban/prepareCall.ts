@@ -18,15 +18,15 @@ import { isValidContractId } from "../shared/utils";
 import { DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS } from "../shared/constants";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import type { ContractInvokeParams, PreparedContractCall } from "./types";
-import { validateContractMethodMetadata } from "./contractMetadata";
+import { validateContractMethodMetadata, validateContractArgs } from "./contractMetadata";
 import { validateContractAbi } from "./validateContractAbi";
 import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
 import { CircuitBreakerRegistry } from "../network/circuitBreaker";
+import { optimizeContractArgs } from "./optimizeArgs";
 
 // Shared circuit breaker registry for RPC operations
 const rpcCircuitBreaker = new CircuitBreakerRegistry({
-  requestWindow: 10,
-  failureRateThreshold: 0.5,
+  failureThreshold: 5,
   recoveryWindowMs: 30_000,
 });
 
@@ -85,13 +85,50 @@ export async function prepareContractCall(
   );
   if (metadataResult.status === "error") return metadataResult;
 
+  // ─── Visibility, authorization, and argument validation ───────────────
+  if (params.cachedMetadata) {
+    const methodMeta = params.cachedMetadata.find((m) => m.name === params.method);
+
+    if (methodMeta) {
+      // Visibility: reject explicitly non-public methods
+      if (methodMeta.visibility && methodMeta.visibility !== "public") {
+        return err(
+          SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+          `Method '${params.method}' has '${methodMeta.visibility}' visibility and cannot be invoked from the client.`,
+        );
+      }
+
+      // Authorization: validate that the invoking account is authorized
+      if (methodMeta.authorizationRequirements?.requiredSigners) {
+        const required = methodMeta.authorizationRequirements.requiredSigners;
+        if (required.length > 0 && !required.includes(params.publicKey)) {
+          return err(
+            SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+            `Method '${params.method}' requires authorization — the invoking account is not among the authorized signers.`,
+          );
+        }
+      }
+
+      // Argument count and type validation
+      if (params.args?.length) {
+        const argsValidation = validateContractArgs(
+          methodMeta,
+          params.args,
+          SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+        );
+        if (argsValidation.status === "error") return argsValidation;
+      }
+    }
+  }
+
   try {
     const rpc = createSorobanServer(rpcUrl);
     const horizonServer = createHorizonServer(horizonUrl);
     const contract = new Contract(params.contractId);
 
     const sourceAccount = await horizonServer.loadAccount(params.publicKey);
-    const operation = contract.call(params.method, ...(params.args ?? []));
+    const optimizedArgs = optimizeContractArgs(params.args ?? []).args;
+    const operation = contract.call(params.method, ...optimizedArgs);
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,

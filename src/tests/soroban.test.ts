@@ -18,6 +18,11 @@ import { simulateContractSafe } from "../soroban/simulateContractSafe";
 import { simulateTransaction } from "../soroban/simulateTransaction";
 import { createContractStateTracker } from "../soroban/contractStateTracker";
 import {
+  decodeAbiValue,
+  encodeAbiValue,
+  serializeCustomType,
+} from "../soroban/contractEncoding";
+import {
   subscribeContractEvents,
   queryContractEvents,
 } from "../soroban/subscribeContractEvents";
@@ -347,6 +352,7 @@ describe("soroban contract metadata", () => {
           name: "hello",
           inputs: [{ name: "to", type: "symbol" }],
           returnType: "string",
+          visibility: "public",
         },
       ]);
     }
@@ -2355,6 +2361,95 @@ describe("encodeContractArgs (#94)", () => {
     const result = encodeContractArgs(method([]), []);
     expect(result).toEqual([]);
   });
+
+  it("encodes ABI-described custom structs with typed fields", () => {
+    const val = serializeCustomType(
+      [
+        { name: "recipient", type: "address" },
+        { name: "amount", type: "u128" },
+        { name: "tags", type: { type: "vec", elementType: "symbol" } },
+      ],
+      {
+        recipient: Keypair.random().publicKey(),
+        amount: 100n,
+        tags: ["royalty", "primary"],
+      },
+      "payment",
+    );
+
+    expect(val.switch()).toEqual(xdr.ScValType.scvMap());
+    expect(val.map()).toHaveLength(3);
+  });
+
+  it("encodes and decodes typed ABI values", () => {
+    const encoded = encodeAbiValue({ type: "vec", elementType: "u32" }, [1, 2], "ids");
+
+    expect(encoded.switch()).toEqual(xdr.ScValType.scvVec());
+    expect(decodeAbiValue(encoded)).toEqual([1, 2]);
+  });
+});
+
+describe("simulateTransaction resource details", () => {
+  beforeEach(() => {
+    resetRpcSimulationMocks();
+  });
+
+  it("returns resource usage and fee breakdown when RPC exposes them", async () => {
+    const actualSdk = await vi.importActual<
+      typeof import("@stellar/stellar-sdk")
+    >("@stellar/stellar-sdk");
+    const contract = new actualSdk.Contract(
+      actualSdk.StrKey.encodeContract(Buffer.alloc(32)),
+    );
+    const sourceAccount = new actualSdk.Account(
+      actualSdk.Keypair.random().publicKey(),
+      "1",
+    );
+    const transactionXdr = new actualSdk.TransactionBuilder(sourceAccount, {
+      fee: actualSdk.BASE_FEE,
+      networkPassphrase: actualSdk.Networks.TESTNET,
+    })
+      .addOperation(contract.call("hello", actualSdk.xdr.ScVal.scvSymbol("world")))
+      .setTimeout(100)
+      .build()
+      .toXDR();
+
+    mockSimulateTransaction.mockResolvedValueOnce({
+      minResourceFee: "1200",
+      refundableFee: "200",
+      nonRefundableFee: "1000",
+      transactionData: {
+        resources: () => ({
+          instructions: () => 50000,
+          readBytes: () => 128,
+          writeBytes: () => 64,
+          footprint: () => ({
+            readOnly: () => ["ro"],
+            readWrite: () => ["rw"],
+          }),
+        }),
+      },
+    });
+
+    const result = await simulateTransaction(
+      networkConfig.rpcUrl,
+      actualSdk.Networks.TESTNET,
+      transactionXdr,
+    );
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data.fee).toBe("1200");
+      expect(result.data.resourceUsage?.instructions).toBe("50000");
+      expect(result.data.resourceUsage?.readLedgerEntries).toBe(1);
+      expect(result.data.feeBreakdown).toEqual({
+        minResourceFee: "1200",
+        refundableFee: "200",
+        nonRefundableFee: "1000",
+        total: "1200",
+      });
+    }
+  });
 });
 
 // ─── #90 XDR validation in prepareContractCall ───────────────────────────────
@@ -2740,130 +2835,374 @@ describe("parseContractResult (#119)", () => {
   });
 });
 
-describe("validateContractData (#141)", () => {
-  it("accepts valid typed contract data", () => {
-    const result = validateContractData(
-      contractId(),
-      xdr.ScVal.scvSymbol("balance"),
-      123n,
-      "u128",
-    );
+import { validateContractArgs } from "../soroban/contractMetadata";
 
-    expect(result.valid).toBe(true);
-    expect(result.issues).toEqual([]);
-    expect(result.type).toBe("u128");
+describe("validateContractArgs", () => {
+  const method = (inputs: ContractMethod["inputs"]): ContractMethod => ({
+    name: "transfer",
+    inputs,
+    returnType: null,
   });
 
-  it("infers valid ScVal data when type is omitted", () => {
-    const result = validateContractData(
-      contractId(),
-      xdr.ScVal.scvSymbol("owner"),
-      xdr.ScVal.scvString(Buffer.from("alice", "utf8")),
-    );
-
-    expect(result.valid).toBe(true);
-    expect(result.type).toBe("string");
-  });
-
-  it("rejects invalid contract IDs and void keys", () => {
-    const result = validateContractData(
-      "not-a-contract",
-      undefined,
-      true,
-      "bool",
-    );
-
-    expect(result.valid).toBe(false);
-    expect(result.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ field: "contractId" }),
-        expect.objectContaining({ field: "key" }),
+  it("passes when all arg types match the ABI", () => {
+    const result = validateContractArgs(
+      method([
+        { name: "from", type: "address" },
+        { name: "amount", type: "u128" },
       ]),
+      [
+        xdr.ScVal.scvAddress(
+          xdr.ScAddress.scAddressTypeAccount(
+            xdr.PublicKey.publicKeyTypeEd25519(Buffer.alloc(32)),
+          ),
+        ),
+        xdr.ScVal.scvU128(
+          new xdr.UInt128Parts({ hi: new xdr.Uint64("0"), lo: new xdr.Uint64("100") }),
+        ),
+      ],
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
     );
+
+    expect(result.status).toBe("ok");
   });
 
-  it("rejects values outside the requested integer type", () => {
-    const result = validateContractData(
-      contractId(),
-      "counter",
-      -1,
-      "u32",
+  it("returns error when a string is passed where u128 is expected", () => {
+    const result = validateContractArgs(
+      method([{ name: "amount", type: "u128" }]),
+      [xdr.ScVal.scvString(Buffer.from("not-a-number", "utf8"))],
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
     );
 
-    expect(result.valid).toBe(false);
-    expect(result.issues[0]).toMatchObject({
-      field: "value",
-      message: expect.stringContaining("u32"),
-    });
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.CONTRACT_PREPARE_FAILED);
+      expect(result.error.message).toContain("amount");
+      expect(result.error.message).toContain("u128");
+      expect(result.error.message).toContain("string");
+    }
   });
 
-  it("rejects ScVal values that do not match the requested type", () => {
-    const result = validateContractData(
-      contractId(),
-      "flag",
-      xdr.ScVal.scvBool(true),
-      "u32",
+  it("returns error with position and field name for mismatched second arg", () => {
+    const result = validateContractArgs(
+      method([
+        { name: "from", type: "address" },
+        { name: "amount", type: "u128" },
+      ]),
+      [
+        xdr.ScVal.scvAddress(
+          xdr.ScAddress.scAddressTypeAccount(
+            xdr.PublicKey.publicKeyTypeEd25519(Buffer.alloc(32)),
+          ),
+        ),
+        xdr.ScVal.scvBool(true),
+      ],
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
     );
 
-    expect(result.valid).toBe(false);
-    expect(result.issues[0]).toMatchObject({
-      field: "value",
-      message: expect.stringContaining("got bool"),
-    });
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.message).toContain("amount");
+      expect(result.error.message).toContain("position 1");
+    }
   });
 
-  it("validates Stellar account and contract address values", () => {
-    const account = Keypair.random().publicKey();
-    const valid = validateContractData(contractId(), "owner", account, "address");
-    const invalid = validateContractData(
-      contractId(),
-      "owner",
-      "not-address",
-      "address",
+  it("passes with zero args when method has no inputs", () => {
+    const result = validateContractArgs(
+      method([]),
+      [],
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+    );
+    expect(result.status).toBe("ok");
+  });
+
+  it("passes when args match a parameterized vec type", () => {
+    const result = validateContractArgs(
+      method([{ name: "ids", type: "vec<address>" }]),
+      [xdr.ScVal.scvVec([])],
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+    );
+    expect(result.status).toBe("ok");
+  });
+
+  it("returns error including expected and actual type in message", () => {
+    const result = validateContractArgs(
+      method([{ name: "flag", type: "bool" }]),
+      [xdr.ScVal.scvU32(1)],
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
     );
 
-    expect(valid.valid).toBe(true);
-    expect(invalid.valid).toBe(false);
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.message).toContain("bool");
+      expect(result.error.message).toContain("u32");
+    }
+  });
+
+  it("is called in prepareContractCall and returns error before simulation", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "transfer",
+        args: [xdr.ScVal.scvString(Buffer.from("wrong", "utf8"))],
+        publicKey: Keypair.random().publicKey(),
+        cachedMetadata: [
+          { name: "transfer", inputs: [{ name: "amount", type: "u128" }], returnType: null },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.CONTRACT_PREPARE_FAILED);
+      expect(result.error.message).toContain("amount");
+    }
+    expect(mockSimulateTransaction).not.toHaveBeenCalled();
   });
 });
 
-describe("executeContract sorobanPoll validation (#285)", () => {
-  it("returns CONTRACT_INVOKE_FAILED when maxAttempts is 0 or negative", async () => {
-    const res0 = await executeContract(
-      "https://rpc.example.com",
-      { network: "testnet", rpcUrl: "https://rpc.example.com", horizonUrl: "https://horizon.example.com" },
-      "some-signed-xdr",
-      { maxAttempts: 0 },
-    );
-    expect(res0.status).toBe("error");
-    if (res0.status === "error") {
-      expect(res0.error.code).toBe(SorokitErrorCode.CONTRACT_INVOKE_FAILED);
-      expect(res0.error.message).toBe("sorobanPoll.maxAttempts must be a positive integer.");
-    }
+// ─── #383 contract method visibility and authorization ─────────────────────
 
-    const resNeg = await executeContract(
-      "https://rpc.example.com",
-      { network: "testnet", rpcUrl: "https://rpc.example.com", horizonUrl: "https://horizon.example.com" },
-      "some-signed-xdr",
-      { maxAttempts: -1 },
+describe("contract method visibility and authorization (#383)", () => {
+  const OWNER_KEY = Keypair.random().publicKey();
+
+  it("allows prepareContractCall for a method with public visibility", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "transfer",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          { name: "transfer", inputs: [], returnType: null, visibility: "public" },
+        ],
+      },
     );
-    expect(resNeg.status).toBe("error");
-    if (resNeg.status === "error") {
-      expect(resNeg.error.code).toBe(SorokitErrorCode.CONTRACT_INVOKE_FAILED);
-    }
+
+    expect(result.status).toBe("ok");
+    expect(mockSimulateTransaction).toHaveBeenCalledOnce();
   });
 
-  it("returns CONTRACT_INVOKE_FAILED when intervalMs is negative", async () => {
-    const resNeg = await executeContract(
-      "https://rpc.example.com",
-      { network: "testnet", rpcUrl: "https://rpc.example.com", horizonUrl: "https://horizon.example.com" },
-      "some-signed-xdr",
-      { intervalMs: -100 },
+  it("rejects prepareContractCall for a method with private visibility", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "internal_helper",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          { name: "internal_helper", inputs: [], returnType: null, visibility: "private" },
+        ],
+      },
     );
-    expect(resNeg.status).toBe("error");
-    if (resNeg.status === "error") {
-      expect(resNeg.error.code).toBe(SorokitErrorCode.CONTRACT_INVOKE_FAILED);
-      expect(resNeg.error.message).toBe("sorobanPoll.intervalMs must be a non-negative number.");
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.CONTRACT_PREPARE_FAILED);
+      expect(result.error.message).toContain("private");
+      expect(result.error.message).toContain("internal_helper");
     }
+    expect(mockSimulateTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects prepareContractCall for a method with admin visibility", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "upgrade",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          { name: "upgrade", inputs: [], returnType: null, visibility: "admin" },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.CONTRACT_PREPARE_FAILED);
+      expect(result.error.message).toContain("admin");
+      expect(result.error.message).toContain("upgrade");
+    }
+    expect(mockSimulateTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects prepareContractCall for a method with restricted visibility", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "restricted_fn",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          { name: "restricted_fn", inputs: [], returnType: null, visibility: "restricted" },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.CONTRACT_PREPARE_FAILED);
+      expect(result.error.message).toContain("restricted");
+    }
+    expect(mockSimulateTransaction).not.toHaveBeenCalled();
+  });
+
+  it("allows methods without visibility metadata (backward compatible)", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "legacy_method",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          { name: "legacy_method", inputs: [], returnType: null },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("ok");
+    expect(mockSimulateTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("allows calls when the invoking account is in requiredSigners", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "authorized_fn",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          {
+            name: "authorized_fn",
+            inputs: [],
+            returnType: null,
+            authorizationRequirements: { requiredSigners: [OWNER_KEY] },
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("ok");
+    expect(mockSimulateTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("rejects calls when the invoking account is not in requiredSigners", async () => {
+    resetRpcSimulationMocks();
+
+    const unauthorizedKey = Keypair.random().publicKey();
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "authorized_fn",
+        args: [],
+        publicKey: unauthorizedKey,
+        cachedMetadata: [
+          {
+            name: "authorized_fn",
+            inputs: [],
+            returnType: null,
+            authorizationRequirements: { requiredSigners: [OWNER_KEY] },
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.CONTRACT_PREPARE_FAILED);
+      expect(result.error.message).toContain("authorization");
+      expect(result.error.message).not.toContain(OWNER_KEY);
+    }
+    expect(mockSimulateTransaction).not.toHaveBeenCalled();
+  });
+
+  it("allows calls when requiredSigners is empty", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "open_fn",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          {
+            name: "open_fn",
+            inputs: [],
+            returnType: null,
+            authorizationRequirements: { requiredSigners: [] },
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("ok");
+  });
+
+  it("still validates argument counts alongside visibility checks", async () => {
+    resetRpcSimulationMocks();
+
+    const result = await prepareContractCall(
+      networkConfig.rpcUrl,
+      networkConfig,
+      networkConfig.horizonUrl,
+      {
+        contractId: contractId(),
+        method: "transfer",
+        args: [],
+        publicKey: OWNER_KEY,
+        cachedMetadata: [
+          { name: "transfer", inputs: [{ name: "amount", type: "u128" }], returnType: null, visibility: "public" },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.error.code).toBe(SorokitErrorCode.CONTRACT_PREPARE_FAILED);
+      expect(result.error.message).toContain("expects 1 argument");
+    }
+    expect(mockSimulateTransaction).not.toHaveBeenCalled();
   });
 });

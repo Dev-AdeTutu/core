@@ -8,6 +8,7 @@ import type { SorokitCache } from "../shared/cache";
 import type { ContractUpgradeEvent } from "../soroban/contractVersion";
 import {
   getContractVersion,
+  getContractVersionHistory,
   invalidateContractVersionCache,
   parseVersionFromMeta,
   resetContractVersionTracking,
@@ -294,5 +295,35 @@ describe("getContractVersion (#393)", () => {
     if (result.status === "error") {
       expect(result.error.code).toBe("CONTRACT_READ_FAILED");
     }
+  });
+
+  it("records version history across upgrades", async () => {
+    const id = contractId();
+
+    mockContractWasm(versionedWasm("1.0.0"));
+    await getContractVersion("https://rpc.example.com", id);
+
+    mockGetLedgerEntries.mockClear();
+    mockContractWasm(versionedWasm("2.0.0"));
+    invalidateContractVersionCache(id);
+    await getContractVersion("https://rpc.example.com", id);
+
+    const history = getContractVersionHistory(id);
+    expect(history).toHaveLength(2);
+    expect(history[0].version).toBe("1.0.0");
+    expect(history[0].isUpgrade).toBe(false);
+    expect(history[1].version).toBe("2.0.0");
+    expect(history[1].isUpgrade).toBe(true);
+  });
+
+  it("clears version history on reset", async () => {
+    const id = contractId();
+
+    mockContractWasm(versionedWasm("1.0.0"));
+    await getContractVersion("https://rpc.example.com", id);
+
+    expect(getContractVersionHistory(id)).toHaveLength(1);
+    resetContractVersionTracking(id);
+    expect(getContractVersionHistory(id)).toHaveLength(0);
   });
 });

@@ -63,8 +63,11 @@ export async function getMultipleAssetBalances(
   const output: MultipleAssetBalancesResult = {};
 
   for (let i = 0; i < settled.length; i++) {
-    const item = settled[i]!;
-    const key = uniqueKeys[i]!;
+    const item = settled[i];
+    const key = uniqueKeys[i];
+    // settled is created from uniqueKeys one-to-one; guard for the type
+    // system rather than assert.
+    if (item === undefined || key === undefined) continue;
 
     if (item.status === "fulfilled") {
       output[item.value.publicKey] = item.value.result;

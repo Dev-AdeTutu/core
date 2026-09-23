@@ -55,12 +55,13 @@ export function createBalanceAlert(
   const ac = new AbortController();
 
   // If the caller provided an external signal, abort our controller when it does.
-  if (config?.signal) {
+  const externalSignal = config?.signal;
+  if (externalSignal) {
     const onExternalAbort = () => {
       ac.abort();
-      config.signal!.removeEventListener("abort", onExternalAbort);
+      externalSignal.removeEventListener("abort", onExternalAbort);
     };
-    config.signal.addEventListener("abort", onExternalAbort, { once: true });
+    externalSignal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
   // Build the stream config, only including intervalMs when explicitly provided

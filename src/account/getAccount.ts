@@ -2,17 +2,16 @@ import { Horizon } from "@stellar/stellar-sdk";
 import { ok, err, SorokitErrorCode } from "../shared/response";
 import type { SorokitResult } from "../shared/response";
 import { formatAddress, isNotFoundError, toMessage, retryWithBackoff, deduplicateRequest } from "../shared";
+import { profileOperation } from "../shared/metrics";
 import type { AccountInfo, AssetBalance } from "./types";
 import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
 import { CircuitBreakerRegistry } from "../network/circuitBreaker";
 
 // Shared circuit breaker registry for Horizon operations
 const horizonCircuitBreaker = new CircuitBreakerRegistry({
-  requestWindow: 10,
-  failureRateThreshold: 0.5,
+  failureThreshold: 5,
   recoveryWindowMs: 30_000,
 });
-import { CircuitBreakerRegistry } from "../network/circuitBreaker";
 
 /**
  * Fetch full account details including all balances from Horizon.
@@ -40,7 +39,8 @@ export function getAccount(
   options?: { signal?: AbortSignal | undefined },
 ): Promise<SorokitResult<AccountInfo>> {
   const cacheKey = `getAccount:${horizonUrl}:${publicKey}`;
-  return deduplicateRequest(cacheKey, async () => {
+  return profileOperation("account.get", () =>
+    deduplicateRequest(cacheKey, async () => {
     try {
       const account = await horizonCircuitBreaker.call(horizonUrl, async () => {
         return await retryWithBackoff(async () => {
@@ -48,10 +48,6 @@ export function getAccount(
           return await server.loadAccount(publicKey);
         });
       });
-
-      if (account.status === "error") {
-        return account;
-      }
 
       const balances: AssetBalance[] = account.balances.map((b) => {
         // Note: parseFloat is used here for convenience/backward compatibility.
@@ -119,5 +115,6 @@ export function getAccount(
         cause,
       );
     }
-  });
+    }),
+  );
 }

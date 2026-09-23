@@ -14,14 +14,25 @@ interface MetadataCacheEntry {
   expiresAt: number;
 }
 
-interface ContractMetadataOptions {
+export interface ContractMetadataOptions {
   cache?: SorokitCache;
   ttlMs?: number;
   now?: () => number;
+  capacity?: number;
 }
 
 const memoryCache = new Map<string, MetadataCacheEntry>();
-const MAX_MEMORY_CACHE_ENTRIES = 100;
+let defaultMaxMemoryCacheCapacity = 1000;
+const inFlightRequests = new Map<string, Promise<SorokitResult<ContractMethod[]>>>();
+
+/**
+ * Configure the maximum capacity for the in-memory LRU metadata cache.
+ */
+export function setMetadataCacheCapacity(capacity: number): void {
+  if (capacity > 0) {
+    defaultMaxMemoryCacheCapacity = capacity;
+  }
+}
 
 function metadataCacheKey(contractId: string): string {
   return `sorokit:contract-metadata:${contractId}`;
@@ -41,7 +52,12 @@ function getCachedMethods(
 
   const memoryValue = memoryCache.get(key);
   if (!memoryValue) return null;
-  if (memoryValue.expiresAt > now) return memoryValue.methods;
+  if (memoryValue.expiresAt > now) {
+    // Touch entry for LRU ordering
+    memoryCache.delete(key);
+    memoryCache.set(key, memoryValue);
+    return memoryValue.methods;
+  }
 
   memoryCache.delete(key);
   return null;
@@ -55,16 +71,26 @@ function setCachedMethods(
   const ttlMs = options?.ttlMs ?? DEFAULT_CONTRACT_METADATA_TTL_MS;
   const expiresAt = (options?.now?.() ?? Date.now()) + ttlMs;
   const entry: MetadataCacheEntry = { methods, expiresAt };
+  const capacity = options?.capacity ?? defaultMaxMemoryCacheCapacity;
 
   options?.cache?.set(key, entry, ttlMs);
 
-  // Enforce memory cache size limit
-  if (!memoryCache.has(key) && memoryCache.size >= MAX_MEMORY_CACHE_ENTRIES) {
+  if (memoryCache.has(key)) {
+    memoryCache.delete(key);
+  } else if (memoryCache.size >= capacity) {
     const oldestKey = memoryCache.keys().next().value as string | undefined;
     if (oldestKey) memoryCache.delete(oldestKey);
   }
 
   memoryCache.set(key, entry);
+}
+
+/**
+ * Clear the in-memory metadata cache.
+ */
+export function resetMetadataCache(): void {
+  memoryCache.clear();
+  inFlightRequests.clear();
 }
 
 /**
@@ -204,7 +230,7 @@ function methodFromSpecEntry(entry: xdr.ScSpecEntry): ContractMethod | null {
       ? null
       : outputs.map((output) => specTypeToString(output)).join(", ");
 
-  return { name, inputs, returnType };
+  return { name, inputs, returnType, visibility: "public" };
 }
 
 function parseContractMethodsFromWasm(wasm: Uint8Array): ContractMethod[] {
@@ -277,6 +303,13 @@ export async function fetchContractWasm(
     );
   }
 }
+
+export const contractMetadataInternals = {
+  parseContractMethodsFromWasm,
+  readContractSpecSection,
+  readWasmCustomSections,
+  fetchContractWasm,
+};
 
 function specTypeToString(typeDef: unknown): string {
   const kind = xdrName(call(typeDef, "switch"));
@@ -434,21 +467,66 @@ export async function getContractMethods(
   const cached = getCachedMethods(cacheKey, options);
   if (cached) return ok(cached);
 
-  try {
-    const wasmResult = await fetchContractWasm(rpcUrl, contractId);
-    if (wasmResult.status === "error") return wasmResult;
-
-    const methods = parseContractMethodsFromWasm(wasmResult.data);
-    setCachedMethods(cacheKey, methods, options);
-
-    return ok(methods);
-  } catch (cause) {
-    return err(
-      SorokitErrorCode.CONTRACT_READ_FAILED,
-      `Failed to discover contract methods: ${toMessage(cause)}`,
-      cause,
-    );
+  if (inFlightRequests.has(cacheKey)) {
+    return inFlightRequests.get(cacheKey)!;
   }
+
+  const promise = (async (): Promise<SorokitResult<ContractMethod[]>> => {
+    try {
+      const wasmResult = await contractMetadataInternals.fetchContractWasm(rpcUrl, contractId);
+      if (wasmResult.status === "error") return wasmResult;
+
+      const methods = contractMetadataInternals.parseContractMethodsFromWasm(wasmResult.data);
+      setCachedMethods(cacheKey, methods, options);
+
+      return ok(methods);
+    } catch (cause) {
+      return err(
+        SorokitErrorCode.CONTRACT_READ_FAILED,
+        `Failed to discover contract methods: ${toMessage(cause)}`,
+        cause,
+      );
+    } finally {
+      inFlightRequests.delete(cacheKey);
+    }
+  })();
+
+  inFlightRequests.set(cacheKey, promise);
+  return promise;
+}
+
+/**
+ * Asynchronously fetch and cache contract metadata for multiple contracts concurrently.
+ *
+ * Avoids duplicate in-flight requests and handles individual failures without
+ * invalidating successful entries.
+ *
+ * @param rpcUrl      - Base URL of the Soroban RPC server.
+ * @param contractIds - Array of contract addresses to preload.
+ * @param options     - Optional cache, capacity, and TTL configuration.
+ */
+export async function preloadContractMetadata(
+  rpcUrl: string,
+  contractIds: string[],
+  options?: ContractMetadataOptions,
+): Promise<Record<string, SorokitResult<ContractMethod[]>>> {
+  const results: Record<string, SorokitResult<ContractMethod[]>> = {};
+
+  const promises = contractIds.map(async (contractId) => {
+    try {
+      const res = await getContractMethods(rpcUrl, contractId, options);
+      results[contractId] = res;
+    } catch (cause) {
+      results[contractId] = err(
+        SorokitErrorCode.CONTRACT_READ_FAILED,
+        `Preload failed for contract ${contractId}: ${toMessage(cause)}`,
+        cause,
+      );
+    }
+  });
+
+  await Promise.allSettled(promises);
+  return results;
 }
 
 export function validateContractMethodMetadata(
@@ -463,12 +541,90 @@ export function validateContractMethodMetadata(
   return err(errorCode, result.error.message, result.error.cause);
 }
 
-export const contractMetadataInternals = {
-  parseContractMethodsFromWasm,
-  readContractSpecSection,
-  readWasmCustomSections,
-  fetchContractWasm,
+// Maps ScVal type names (e.g. "scvU128") to the ABI type strings produced by specTypeToString()
+const SCV_TO_ABI_TYPE: Record<string, string> = {
+  scvBool: "bool",
+  scvU32: "u32",
+  scvI32: "i32",
+  scvU64: "u64",
+  scvI64: "i64",
+  scvU128: "u128",
+  scvI128: "i128",
+  scvString: "string",
+  scvSymbol: "symbol",
+  scvBytes: "bytes",
+  scvVoid: "void",
+  scvVec: "vec",
+  scvMap: "map",
+  scvAddress: "address",
 };
+
+/**
+ * Validates that each ScVal argument matches the expected type declared in the
+ * contract method's ABI inputs. Only validates args that have a matching input;
+ * count mismatch is already handled by validateContractMethodMetadata().
+ */
+export function validateContractArgs(
+  method: ContractMethod,
+  args: xdr.ScVal[],
+  errorCode: SorokitErrorCode,
+): SorokitResult<void>;
+export function validateContractArgs(
+  schema: ContractSchema,
+  method: string,
+  argCount: number,
+): SorokitResult<void>;
+export function validateContractArgs(
+  methodOrSchema: ContractMethod | ContractSchema,
+  argsOrMethod: xdr.ScVal[] | string,
+  errorCodeOrArgCount?: SorokitErrorCode | number,
+): SorokitResult<void> {
+  if ("inputs" in methodOrSchema && Array.isArray(argsOrMethod)) {
+    const method = methodOrSchema;
+    const args = argsOrMethod;
+    const errorCode = errorCodeOrArgCount as SorokitErrorCode;
+    for (let i = 0; i < args.length; i++) {
+      const input = method.inputs[i];
+      const arg = args[i];
+      if (!input || !arg) continue;
+
+      const scvName: string = arg.switch().name;
+      const actualType = SCV_TO_ABI_TYPE[scvName] ?? scvName;
+      const expectedType = input.type;
+
+      // Allow vec/map/option/result/tuple as prefix matches (e.g. "vec<address>")
+      const expectedBase = expectedType.split("<")[0];
+      if (actualType !== expectedBase && actualType !== expectedType) {
+        return err(
+          errorCode,
+          `Argument "${input.name}" (position ${i}): expected type "${expectedType}", got "${actualType}"`,
+        );
+      }
+    }
+
+    return ok(undefined);
+  }
+
+  const schema = methodOrSchema as ContractSchema;
+  const method = argsOrMethod as string;
+  const argCount = errorCodeOrArgCount as number;
+  const methodSchema = schema.methods.find((m) => m.name === method);
+  if (!methodSchema) {
+    return err(
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+      `Method "${method}" not found in schema for contract ${schema.contractId}. Available: ${schema.methods.map((m) => m.name).join(", ")}`,
+    );
+  }
+
+  if (methodSchema.params.length !== argCount) {
+    return err(
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+      `Method "${method}" expects ${methodSchema.params.length} argument(s) [${methodSchema.params.map((p) => `${p.name}: ${p.type}`).join(", ")}], but ${argCount} were provided.`,
+    );
+  }
+
+  return ok(undefined);
+}
 
 /**
  * Fetch, parse, and cache the typed ABI schema for a contract.
@@ -530,43 +686,4 @@ function isContractSchema(value: unknown): value is ContractSchema {
   if (!value || typeof value !== "object") return false;
   const s = value as Partial<ContractSchema>;
   return typeof s.contractId === "string" && Array.isArray(s.methods);
-}
-
-/**
- * Validate user-supplied arguments against a parsed `ContractMethodSchema`.
- *
- * Checks:
- * - the method exists in the schema
- * - the number of provided ScVal arguments matches the expected param count
- *
- * Returns `ok(void)` when valid, or a `CONTRACT_PREPARE_FAILED` error
- * describing the mismatch.
- *
- * @param schema    - Schema returned by `parseContractSchema`.
- * @param method    - Name of the method to validate against.
- * @param argCount  - Number of arguments the caller intends to pass.
- *
- * (issue #206)
- */
-export function validateContractArgs(
-  schema: ContractSchema,
-  method: string,
-  argCount: number,
-): SorokitResult<void> {
-  const methodSchema = schema.methods.find((m) => m.name === method);
-  if (!methodSchema) {
-    return err(
-      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
-      `Method "${method}" not found in schema for contract ${schema.contractId}. Available: ${schema.methods.map((m) => m.name).join(", ")}`,
-    );
-  }
-
-  if (methodSchema.params.length !== argCount) {
-    return err(
-      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
-      `Method "${method}" expects ${methodSchema.params.length} argument(s) [${methodSchema.params.map((p) => `${p.name}: ${p.type}`).join(", ")}], but ${argCount} were provided.`,
-    );
-  }
-
-  return ok(undefined);
 }

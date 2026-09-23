@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  createConsoleTransport,
   createLogger,
+  registerLogTransport,
   withLogging,
   type SorokitLogger,
+  type StructuredLogRecord,
   type StructuredLogMeta,
 } from "../shared/logger";
 import { ok, err, SorokitErrorCode } from "../shared/response";
@@ -114,6 +117,60 @@ describe("shared/logger", () => {
       );
 
       debugSpy.mockRestore();
+    });
+
+    it("writes structured records to registered transports and redacts secrets", () => {
+      const records: StructuredLogRecord[] = [];
+      const unregister = registerLogTransport({
+        write: (record) => records.push(record),
+      });
+      const logger = createLogger({ logLevel: "debug" });
+
+      logger.info("wallet.sign", {
+        module: "wallet",
+        secretKey: "SSECRET",
+        nested: { authToken: "token" },
+      });
+      unregister();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toEqual(
+        expect.objectContaining({
+          level: "info",
+          module: "wallet",
+          message: "wallet.sign",
+          timestamp: expect.any(String),
+        }),
+      );
+      expect(records[0]?.context?.secretKey).toBe("[redacted]");
+      expect((records[0]?.context?.nested as StructuredLogMeta).authToken).toBe("[redacted]");
+    });
+
+    it("supports per-module log levels and custom transports", () => {
+      const records: StructuredLogRecord[] = [];
+      const logger = createLogger({
+        logLevel: "error",
+        moduleLevels: { account: "debug" },
+        transports: [{ write: (record) => records.push(record) }],
+      });
+
+      logger.debug("account.get", { module: "account" });
+      logger.warn("wallet.connect", { module: "wallet" });
+
+      expect(records.map((record) => record.message)).toEqual(["account.get"]);
+    });
+
+    it("creates a console transport", () => {
+      const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      createConsoleTransport("[custom]").write({
+        timestamp: "2026-01-01T00:00:00.000Z",
+        level: "info",
+        module: "test",
+        message: "hello",
+      });
+
+      expect(infoSpy).toHaveBeenCalledWith("[custom]", expect.objectContaining({ message: "hello" }));
+      infoSpy.mockRestore();
     });
   });
 

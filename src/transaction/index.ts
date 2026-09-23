@@ -81,13 +81,39 @@ export {
   buildAccountMerge,
   checkTrustlines,
   buildBulkTrustlines,
+  validateTrustline,
+  getBulkTrustlines,
+  buildBulkTrustlineTransaction,
   clearSequenceCache,
   validateMemoPolicy,
 } from "./buildTransaction";
-export type { AccountMergeOptions } from "./buildTransaction";
+export type { AccountMergeOptions, TrustlineState } from "./buildTransaction";
+export {
+  evaluateTrustlineApproval,
+  buildApprovedTrustlineTransaction,
+} from "../account/trustlinePolicy";
+export type {
+  TrustlineApprovalPolicy,
+  TrustlineApprovalDecision,
+  ApprovedTrustlineBuild,
+} from "../account/trustlinePolicy";
 export { submitTransaction } from "./submitTransaction";
 export { getTransactionStatus } from "./status";
 export { estimateFee } from "./estimateFee";
+export {
+  analyzeTransactionCosts,
+  summarizeTransactionCosts,
+  forecastTransactionCosts,
+} from "./costAnalysis";
+export type {
+  TransactionCostRecord,
+  TransactionCostAnalysis,
+  CostSummary,
+  PlannedOperation,
+  CostForecast,
+} from "./costAnalysis";
+export { reverseTransaction, issueRefund } from "./refunds";
+export type { RefundParams, RefundDetails } from "./refunds";
 export { streamTransactions } from "./streamTransactions";
 
 // ─── Claimable balances (#543) ─────────────────────────────────────────────────
@@ -132,6 +158,26 @@ export type {
   FeeEstimateMode,
   PendingComposeOperation,
 } from "./compose";
+export {
+  getAssetPrice,
+  normalizeAsset,
+  normalizePrice,
+  StaticPriceFeed,
+  DEFAULT_PRICE_CACHE_TTL_MS,
+} from "./priceFeeds";
+export {
+  subscribePrices,
+  WebSocketPriceProvider,
+  computeBackoffDelay,
+} from "./priceSubscriptions";
+export type {
+  PriceUpdate,
+  PriceSubscription,
+  PriceSubscriptionProvider,
+  PriceSubscriptionOptions,
+  WebSocketPriceProviderOptions,
+} from "./priceSubscriptions";
+export { subscribeToTransactionEvents } from "./subscriptions";
 export {
   exportTransactionHistory,
   formatTransactionsToCsv,
@@ -185,6 +231,9 @@ export type {
   FeeEstimateOptions,
   FeeTiers,
   CongestionFeeEstimate,
+  TransactionPriority,
+  PriorityMultipliers,
+  AdaptiveFeeOptions,
 } from "./estimateFee";
 export {
   fetchCongestionFeeEstimate,
@@ -196,22 +245,52 @@ export {
   ADAPTIVE_FEE_TTL_MAX_MS,
   ADAPTIVE_FEE_TTL_INTERMEDIATE_MS,
   FEE_HISTORY_MAX_ENTRIES,
+  DEFAULT_PRIORITY_MULTIPLIERS,
+  calculateAdaptiveFee,
 } from "./estimateFee";
 export {
   findSwapPath,
   buildPathPaymentTransaction,
   describeRouterSwapFailure,
+  discoverPaymentPaths,
+  clearPathDiscoveryCache,
+  DEFAULT_PATH_DISCOVERY_CACHE_TTL_MS,
+  buildOptimizedSplitPaymentPlan,
+} from "./pathPayment";
+export type {
+  DiscoveredPaymentPath,
+  PaymentPathDiscoveryResult,
+  DiscoverPaymentPathsOptions,
 } from "./pathPayment";
 export type {
   SwapRoute,
   SwapRouteAsset,
   FindSwapPathOptions,
   BuildPathPaymentParams,
+  PaymentRouteQuote,
+  SplitPaymentLeg,
+  SplitPaymentPlan,
+  SplitPaymentOptions,
 } from "./pathPayment";
 export type {
   TransactionStreamConfig,
   TransactionPage,
 } from "./streamTransactions";
+export type {
+  AssetPrice,
+  PriceFeed,
+  PriceFeedStatus,
+} from "../shared/types";
+export type {
+  GetAssetPriceOptions,
+} from "./priceFeeds";
+export type {
+  EventSubscription as TransactionEventSubscription,
+  TransactionEvent,
+  TransactionEventTransport,
+  TransactionEventType,
+  TransactionSubscriptionOptions,
+} from "./subscriptions";
 export {
   queryTransactionHistory,
 } from "./queryTransactionHistory";
@@ -222,6 +301,8 @@ export type {
   TransactionHistoryResult,
 } from "./queryTransactionHistory";
 export type {
+  CostBasisLot,
+  CostBasisOptions,
   ExportFormat,
   ExportedTransaction,
   ExportTransactionHistoryOptions,
@@ -250,20 +331,66 @@ export type {
   ValidateDestinationOptions,
 } from "./validateDestination";
 
-// ─── Webhook support (#208) ───────────────────────────────────────────────────
+// ─── Webhook support (#208, #395) ─────────────────────────────────────────────
 export {
   registerWebhook,
   unregisterWebhook,
   listWebhooks,
   clearWebhooks,
   triggerWebhooks,
+  dispatchTransactionEvent,
   verifySignature,
 } from "./webhooks";
+
+// ─── Payment notifications (#fix.md) ──────────────────────────────────────────
+export {
+  registerPaymentWebhook,
+  unregisterPaymentWebhook,
+  listPaymentWebhooks,
+  clearPaymentWebhooks,
+  triggerPaymentNotifications,
+  dispatchPaymentNotification,
+  generatePaymentEventId,
+  isPaymentNotificationEvent,
+  PAYMENT_NOTIFICATION_EVENTS,
+} from "./paymentNotifications";
+export type {
+  PaymentNotificationEvent,
+  PaymentWebhookOptions,
+  PaymentWebhookPayload,
+  PaymentWebhookRegistration,
+  PaymentNotificationInput,
+  PaymentNotificationChannel,
+} from "./paymentNotifications";
 export type {
   WebhookEventType,
+  TransactionWebhookEvent,
+  LegacyWebhookEventType,
   WebhookRegistration,
   WebhookPayload,
+  WebhookEventDetails,
 } from "./webhooks";
+
+// ─── Fee-bump transactions (#398) ─────────────────────────────────────────────
+export { buildFeeBumpTransaction } from "./feeBumpTransaction";
+
+// ─── Escrow transactions ───────────────────────────────────────────────────────
+export {
+  buildEscrowTransaction,
+  validateEscrow,
+  validateEscrowAction,
+  createEscrowRelease,
+  createEscrowRefund,
+  createEscrowDispute,
+  isEscrowExpired,
+} from "./escrow";
+export type {
+  EscrowAction,
+  EscrowState,
+  EscrowTiming,
+  EscrowParams,
+  EscrowValidation,
+} from "./escrow";
 
 // ─── Asset pair trading logic (#209) ───────────────────────────────────────────
 export {
@@ -289,6 +416,14 @@ export type {
   MultiSigEnvelopeParams,
   MultiSigEnvelope,
 } from "./types";
+
+export {
+  verifyTransactionSignatures,
+} from "./witnessValidation";
+export type {
+  SignatureValidationResult,
+  WitnessValidationResult,
+} from "./witnessValidation";
 export {
   saveTransactionTemplate,
   loadTemplate,
@@ -303,6 +438,22 @@ export type {
   TransactionTemplateStore,
   TemplateParamValue,
 } from "./templates";
+export {
+  createTransactionBundle,
+  resolveExecutionOrder,
+  areDependenciesMet,
+  findNextExecutableStep,
+  updateStepStatus,
+  recalculateBundleStatus,
+  recoverBundle,
+} from "./bundles";
+export type {
+  BundleStep,
+  BundleStepStatus,
+  BundleStatus,
+  TransactionBundle,
+  CreateBundleOptions,
+} from "./bundles";
 // ─── Asset constants and factories ───────────────────────────────────────────
 export const USDC_MAINNET_ISSUER =
   "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -314,6 +465,9 @@ export const EURC_MAINNET_ISSUER =
   "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2";
 export const EURC_TESTNET_ISSUER =
   "GB3Q6QDZYTHWT7E5PVS3W7FUT5GVAFC5KSZFFLPU25GO7VTC3NM2ZTVO";
+
+export { compose } from "./compose";
+export type { OperationStep, ComposedPipeline } from "./compose";
 
 export function nativeAsset(): Asset {
   return Asset.native();
@@ -385,3 +539,105 @@ export async function compareFeeAcrossNetworks(
 // and therefore lives in src/soroban/simulateTransaction.ts.
 // It can be accessed via client.soroban.simulate().
 
+
+export { SpendingPolicyEngine, createSpendingPolicyEngine } from "./spendingPolicy";
+export type {
+  SpendingLimitPeriod,
+  SpendingLimit,
+  DestinationRestriction,
+  ApprovalThreshold,
+  SpendingPolicyConfig,
+  SpendingRequest,
+  SpendingRecordStatus,
+  SpendingRecord,
+  PolicyViolationCode,
+  PolicyViolation,
+  SpendingDecision,
+  SpendingEvaluation,
+  SpendingUsage,
+} from "./spendingPolicy";
+// ─── Historical fee forecasting (#523) ────────────────────────────────────────
+export {
+  forecastFees,
+  normalizeFeeHistory,
+  recordFeeObservation,
+  getFeeObservations,
+  clearFeeObservations,
+  evaluateForecastAccuracy,
+  linearFeeForecastModel,
+  DEFAULT_OUTLIER_THRESHOLD,
+  DEFAULT_FORECAST_CONFIDENCE_LEVEL,
+  FEE_OBSERVATION_MAX_ENTRIES,
+} from "./feeForecast";
+export type {
+  FeeObservation,
+  NormalizedFeeObservation,
+  NormalizedFeeHistory,
+  NormalizeFeeHistoryOptions,
+  DiscardedObservation,
+  DiscardedObservationReason,
+  ForecastDataWindow,
+  FeeForecast,
+  FeeForecastResult,
+  FeeForecastModel,
+  FeeForecastPrediction,
+  ForecastFeesOptions,
+  ForecastUnavailableReason,
+  ForecastAccuracySample,
+  ForecastAccuracyReport,
+} from "./feeForecast";
+
+// ─── Transaction dependency ordering (#526) ───────────────────────────────────
+export {
+  validateDependencies,
+  planTransactionExecution,
+  resolveTransactionOrder,
+  findParallelizableTransactions,
+  DependencyGraphError,
+} from "./dependencyGraph";
+export type {
+  TransactionNode,
+  DependencyError,
+  DependencyErrorCode,
+  DependencyValidation,
+  ExecutionPlan,
+  DependencyPlanResult,
+} from "./dependencyGraph";
+
+// ─── Multi-party transaction consensus (#507) ────────────────────────────────
+export {
+  createConsensusTransaction,
+  approveConsensusTransaction,
+  rejectConsensusTransaction,
+  getConsensusSummaryResult,
+  finalizeConsensusTransaction,
+  getConsensusTransaction,
+  removeConsensusTransaction,
+} from "./consensusCore";
+export type {
+  ConsensusState,
+  ConsensusParticipant,
+  ApprovalDecision,
+  ConsensusTransactionConfig,
+  ConsensusTransaction,
+  ConsensusSummary,
+  CreateConsensusOptions,
+} from "./consensusTypes";
+
+// ─── Transaction XDR encoding optimization (#505) ───────────────────────────
+export {
+  encodeTransaction,
+  decodeTransaction,
+  registerBasePayload,
+  clearPayloadCache,
+  getPayloadCacheStats,
+} from "./xdrEncodingCore";
+export type {
+  EncodedTransaction,
+  EncodingMetadata,
+  EncodingStrategy,
+  EncodingConfig,
+  EncodingResult,
+  DecodingResult,
+  TransactionDelta,
+} from "./xdrEncodingTypes";

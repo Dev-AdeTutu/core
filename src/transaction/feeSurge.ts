@@ -18,16 +18,18 @@ export const MEDIAN_FEE_CACHE_TTL_MS = 60_000;
  * Calculate the statistical median of a non-empty array of numbers.
  */
 export function calculateMedian(values: number[]): number {
-  if (values.length === 0) return 0;
-
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
 
+  const upper = sorted[mid];
+  if (upper === undefined) return 0; // empty input
+
   if (sorted.length % 2 === 0) {
-    return (sorted[mid - 1]! + sorted[mid]!) / 2;
+    const lower = sorted[mid - 1];
+    return lower === undefined ? upper : (lower + upper) / 2;
   }
 
-  return sorted[mid]!;
+  return upper;
 }
 
 /**

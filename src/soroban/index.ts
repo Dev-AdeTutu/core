@@ -15,10 +15,21 @@ export interface ContractDataValidationResult {
 }
 
 export { readContract } from "./readContract";
-export { decodeContractValue, encodeContractArgs } from "./contractEncoding";
+export {
+  createContractReadCacheKey,
+  invalidateContractReadCache,
+} from "./contractCallIdentity";
+export {
+  decodeAbiValue,
+  decodeContractValue,
+  encodeAbiValue,
+  encodeContractArgs,
+  serializeCustomType,
+} from "./contractEncoding";
 export { parseContractResult } from "./parseContractResult";
 export { prepareContractCall } from "./prepareCall";
-export { simulateTransaction } from "./simulateTransaction";
+export { simulateTransaction, simulateTransactionBatch } from "./simulateTransaction";
+export type { BatchSimulationResult, SimulateTransactionOptions } from "./simulateTransaction";
 export { simulateContractSafe } from "./simulateContractSafe";
 export type {
   SimulateContractSafeOptions,
@@ -29,9 +40,16 @@ export { invokeContract } from "./invokeContract";
 export type { InvokeContractOptions } from "./invokeContract";
 export { invokeBatchContracts } from "./invokeBatchContracts";
 export {
+  andEventFilters,
+  calculateRate,
+  countByType,
+  filterContractEvents,
+  groupByTime,
+  orEventFilters,
   subscribeContractEvents,
   queryContractEvents,
   streamContractEvents,
+  DEFAULT_RECOVERY_WINDOW_MS,
 } from "./subscribeContractEvents";
 export { streamContractEventsRealTime } from "./streamContractEventsRealTime";
 export type {
@@ -47,11 +65,14 @@ export {
   getContractMethods,
   parseContractSchema,
   validateContractArgs,
+  preloadContractMetadata,
+  setMetadataCacheCapacity,
 } from "./contractMetadata";
 export type {
   ContractSchema,
   ContractMethodSchema,
   ContractMethodParam,
+  ContractMetadataOptions,
 } from "./contractMetadata";
 export {
   getContractVersion,
@@ -65,6 +86,31 @@ export type {
   OnContractUpgrade,
   ContractVersionOptions,
 } from "./contractVersion";
+export {
+  computeContractMetadataFingerprint,
+  buildContractMetadataSnapshot,
+  checkContractMetadataCompatibility,
+  checkStaleContractMetadata,
+  applyContractMetadataMigration,
+  invalidateContractMetadataForIncompatibility,
+  invalidateCachedContractMetadata,
+} from "./contractMetadataCompatibility";
+export type {
+  ContractMetadataVersion,
+  ContractMetadataSnapshot,
+  ContractMetadataChange,
+  ContractMetadataChangeKind,
+  ContractMetadataCompatibilityStatus,
+  ContractMetadataCompatibilityReport,
+  ContractMetadataMigration,
+  ContractMetadataMigrationHook,
+  ContractMetadataMigrationResult,
+  BuildMetadataSnapshotInput,
+  CheckCompatibilityInput,
+  StaleMetadataCheckInput,
+  StaleMetadataCheckResult,
+  InvalidateMetadataInput,
+} from "./contractMetadataCompatibility";
 export {
   decodeContractError,
   DEFAULT_CONTRACT_ERROR_MAP,
@@ -129,12 +175,68 @@ export {
   clearSnapshots,
 } from "./contractSnapshot";
 export type { ContractSnapshot, SnapshotDiff } from "./contractSnapshot";
+export { getNftMetadata, clearNftMetadataCache } from "./nftMetadata";
+export type { NftMetadata, NftMetadataOptions } from "./nftMetadata";
 export type { BuildContractDeployOptions } from "./deployContract";
+// Event archival exports
+export {
+  EventArchivalManager,
+  InMemoryEventArchiveStorage,
+  queryContractEventArchive,
+  calculateArchivedEventRate,
+  getArchivedEventTimeSeries,
+} from "./eventArchival";
+export type {
+  EventArchiveStorage,
+  ArchivedContractEvent,
+  EventArchiveQuery,
+  ArchiveQueryResult,
+  PaginationInfo,
+  TimeSeriesBucket,
+  EventTypeCount,
+  EventAggregation,
+  EventArchivalOptions,
+  EventArchivalSubscription,
+  ArchivalStats,
+  StorageStats,
+} from "./eventArchival";
+
 export type {
   ContractEvent,
+  EventFilterPredicate,
   ContractEventFilter,
   ContractEventSubscriptionOptions,
 } from "./subscribeContractEvents";
+export {
+  InMemoryEventIndex,
+  indexContractEvent,
+  queryIndexedEvents,
+} from "./eventIndex";
+export type {
+  IndexedContractEvent,
+  IndexedEventFilter,
+  IndexedEventPage,
+  IndexedEventQueryResult,
+} from "./eventIndex";
+export { analyzeCallOptimization } from "./callOptimization";
+export type {
+  CallOptimizationReport,
+  CallOptimizationSuggestion,
+  OptimizationPriority,
+  OptimizationSuggestionType,
+} from "./callOptimization";
+export {
+  AssetMappingRegistry,
+  assetMappingRegistry,
+  unwrapAssetFromSoroban,
+  wrapAssetForSoroban,
+} from "./assetBridge";
+export type {
+  AssetBridgeAdapter,
+  AssetBridgeOperationOptions,
+  AssetIdentifier,
+  AssetMapping,
+} from "./assetBridge";
 export type {
   ContractMethod,
   ContractMethodInput,
@@ -150,6 +252,10 @@ export type {
   SimulateTransactionResult,
   BatchContractInvocation,
   BatchContractResult,
+  ContractAbiField,
+  ContractAbiTypeDescriptor,
+  SorobanSimulationFeeBreakdown,
+  SorobanSimulationResourceUsage,
 } from "./types";
 
 const CONTRACT_DATA_TYPES = new Set<ContractDataType>([
@@ -442,3 +548,80 @@ function parseInteger(value: unknown): bigint | undefined {
   if (typeof value === "string" && /^-?\d+$/.test(value)) return BigInt(value);
   return undefined;
 }
+
+export { analyzeContractStorage } from "./storageAnalysis";
+export type {
+  ContractStorageEntry,
+  StorageAnalysisOptions,
+  StorageEntryReport,
+  StorageRecommendation,
+  StorageAnalysisReport,
+} from "./storageAnalysis";
+
+export {
+  ContractStateHistory,
+  createContractStateHistory,
+  fingerprintState,
+} from "./contractStateHistory";
+export type {
+  ContractStateSnapshotRecord,
+  CaptureSnapshotInput,
+  ContractStatePin,
+  StateEntryChangeKind,
+  StateEntryChange,
+  ContractStateComparison,
+  SnapshotIntegrityReport,
+  SnapshotQuery,
+} from "./contractStateHistory";
+
+// ─── Contract state optimization (#514) ───────────────────────────────────────
+export {
+  compressContractState,
+  decompressContractState,
+  measureContractState,
+  benchmarkContractState,
+} from "./contractStateOptimization";
+export type {
+  StateEncoding,
+  StateCompression,
+  ContractStateOptimizeOptions,
+  ContractStateMetadata,
+  OptimizedContractState,
+  ContractStateSizeReport,
+  CompressionBenchmark,
+} from "./contractStateOptimization";
+
+export {
+  MultiSigContractExecution,
+  createMultiSigContractExecution,
+} from "./multiSigExecution";
+export type {
+  ContractExecutionSigner,
+  CreateSigningRequestInput,
+  CollectedSignature,
+  SigningRequestStatus,
+  ContractSigningRequest,
+  SigningRequestState,
+} from "./multiSigExecution";
+
+export {
+  withExecutionPolicy,
+  cleanupAllExecutionPolicies,
+} from "./contractCallExecutionPolicy";
+export type {
+  ContractCallExecutionPolicy,
+  TimeoutRecoveryStrategy,
+} from "./contractCallExecutionPolicy";
+
+export {
+  recordContractInvocation,
+  queryContractAuditLog,
+  exportAuditLogAsJson,
+  exportAuditLogAsCsv,
+  clearContractAuditLog,
+} from "./contractAuditTrail";
+export type {
+  ContractAuditEntry,
+  ContractAuditFilter,
+  ContractAuditStatus,
+} from "./contractAuditTrail";

@@ -158,6 +158,50 @@ describe("exportTransactionHistory", () => {
     }
   });
 
+  it("adds configurable cost-basis fields to JSON exports", async () => {
+    const mockTxRecords = [
+      {
+        hash: "txhashbasis",
+        created_at: "2026-01-12T12:00:00Z",
+        ledger_attr: 102,
+        successful: true,
+        fee_charged: 100,
+        source_account: publicKey,
+        memo: "basis test",
+        envelope_xdr: "AAAAA...",
+        paging_token: "pt1",
+      },
+    ];
+
+    const mockCall = vi.fn().mockResolvedValue({ records: mockTxRecords });
+    const mockBuilder = {
+      forAccount: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      cursor: vi.fn().mockReturnThis(),
+      call: mockCall,
+    };
+
+    vi.spyOn(serverFactory, "createHorizonServer").mockReturnValue({ transactions: vi.fn().mockReturnValue(mockBuilder) } as any);
+
+    const result = await exportTransactionHistory(horizonUrl, publicKey, {
+      format: "json",
+      costBasis: {
+        unitCostByAsset: { XLM: "0.08" },
+        proceedsUnitByAsset: { XLM: "0.12" },
+        precision: 2,
+      },
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      const parsed = JSON.parse(result.data);
+      expect(parsed[0].costBasis).toBe("0.00");
+      expect(parsed[0].proceeds).toBe("0.00");
+      expect(parsed[0].gainLoss).toBe("0.00");
+    }
+  });
+
   it("filters by date range (fromDate / toDate)", async () => {
     // Records in ascending order (oldest first) matching order: "asc"
     const mockTxRecords = [

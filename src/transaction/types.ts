@@ -348,6 +348,8 @@ export interface BumpSequenceParams extends MemoParams {
 
 export type { FeeEstimate, FeeEstimateOptions } from "./estimateFee";
 export type {
+  CostBasisLot,
+  CostBasisOptions,
   ExportFormat,
   ExportedTransaction,
   ExportTransactionHistoryOptions,

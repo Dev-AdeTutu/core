@@ -12,6 +12,19 @@ export interface AccountInfo {
   balances: AssetBalance[];
 }
 
+export interface AccountMetadata {
+  publicKey: string;
+  sequence: string;
+  subentryCount: number;
+  lastModifiedLedger?: number;
+  homeDomain?: string;
+  thresholds?: {
+    lowThreshold?: number;
+    medThreshold?: number;
+    highThreshold?: number;
+  };
+}
+
 export interface AssetBalance {
   assetType:
     | "native"

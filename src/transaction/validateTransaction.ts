@@ -8,6 +8,8 @@ import { toMessage } from "../shared";
 
 const DEFAULT_MIN_FEE_STROOPS = 100;
 const DEFAULT_MAX_FEE_STROOPS = 100_000;
+/** Maximum number of operations allowed per Stellar transaction. */
+export const MAX_OPERATIONS_PER_TRANSACTION = 100;
 
 const KNOWN_NETWORK_PASSPHRASES: Record<string, string> = {
   "Public Global Stellar Network ; September 2015": "mainnet",
@@ -111,6 +113,16 @@ export function validateTransaction(
       field: "fee",
       message: `Fee ${feeStroops} stroops exceeds the sanity limit of ${maxFee} stroops`,
       severity: "warning",
+    });
+  }
+
+  // ── Operation count limit ──────────────────────────────────────────────────
+  const opCount = transaction.operations.length;
+  if (opCount > MAX_OPERATIONS_PER_TRANSACTION) {
+    issues.push({
+      field: "operations",
+      message: `Transaction has ${opCount} operations but maximum is ${MAX_OPERATIONS_PER_TRANSACTION}`,
+      severity: "error",
     });
   }
 

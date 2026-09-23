@@ -1,9 +1,41 @@
+export { getWalletCapabilities, WALLET_CAPABILITY_IDS } from "./capabilities";
 export { connectWallet } from "./connect";
 export { disconnectWallet } from "./disconnect";
 export { signTransaction } from "./signTransaction";
 export { signTransactionOffline } from "./signTransactionOffline";
+export { SigningRateLimiter } from "./signingRateLimiter";
+export type { SigningRateLimiterConfig, QueueState } from "./signingRateLimiter";
+export { createSigningChallenge, mergeSignatures } from "./signingDelegation";
 export { FreighterAdapter, XBullAdapter, LobstrAdapter } from "./adapters";
 export { WalletType } from "./types";
+export { generateDeviceFingerprint, evaluateDeviceTrust, DEFAULT_TRUST_THRESHOLD } from "./deviceTrust";
+export type { DeviceSignals, DeviceFingerprint, TrustHistoryEntry, TrustScoreOptions, TrustEvaluation } from "./deviceTrust";
+
+// ─── Wallet connection throttling and abuse detection (#506) ──────────────────
+export {
+  checkThrottle,
+  recordConnectionAttempt,
+  addToAllowlist,
+  addToBlocklist,
+  removeRateLimitRule,
+  getOriginState,
+  resetOriginState,
+  detectAbuse,
+  getConnectionStats,
+  clearThrottlingState,
+} from "./throttlingCore";
+export type {
+  ThrottlingConfig,
+  ThrottleCheckResult,
+  OriginRateLimitState,
+  ConnectionAttempt,
+  RateLimitRule,
+  AbuseDetectionResult,
+  ConnectionStats,
+} from "./throttlingTypes";
+export { RateLimitRuleType } from "./throttlingTypes";
+
+import type { PersistenceAdapter } from "./types";
 export type {
   WalletState,
   WalletAdapter,
@@ -18,6 +50,11 @@ export type {
   WalletFeature,
   ConnectedAccountsResult,
   AccountSwitchResult,
+  WalletCapability,
+  WalletCapabilityId,
+  WalletCapabilitySource,
+  WalletCapabilities,
+  PersistenceAdapter,
 } from "./types";
 export {
   getSigningHistory,
@@ -29,6 +66,12 @@ export type {
   SigningHistoryFilter,
   SigningHistoryStore,
 } from "./signingHistory";
+export type {
+  CreateSigningChallengeOptions,
+  MergeSignaturesResult,
+  SigningChallenge,
+  SigningDelegationSignature,
+} from "./signingDelegation";
 
 import { ok, err, SorokitErrorCode } from "../shared/response";
 import type { SorokitResult } from "../shared/response";
@@ -45,6 +88,10 @@ import type {
   WalletFeature,
   ConnectedAccountsResult,
   AccountSwitchResult,
+  WalletCapability,
+  WalletCapabilityId,
+  WalletCapabilitySource,
+  WalletCapabilities,
 } from "./types";
 import { WalletType } from "./types";
 
@@ -244,9 +291,10 @@ export function recommendWallets(
 ): DetectedWallet[] {
   const detected = detectInstalledWallets(adapters);
   const available = detected.filter((w) => w.available);
-  if (!criteria?.features?.length) return available;
+  const requiredFeatures = criteria?.features;
+  if (!requiredFeatures?.length) return available;
   return available.filter((w) =>
-    criteria.features!.every((f) => w.features.includes(f)),
+    requiredFeatures.every((f) => w.features.includes(f)),
   );
 }
 
@@ -551,3 +599,124 @@ export async function diagnoseWalletConnection(
     recommendations,
   });
 }
+
+/**
+ * Create a {@link PersistenceAdapter} backed by `localStorage`.
+ *
+ * Returns `null` when `localStorage` is not available (e.g. in Node or
+ * in a sandboxed iframe).  The default storage key is
+ * `"sorokit:wallet"`.
+ *
+ * @param storageKey - Key under which wallet state is persisted.
+ *
+ * @example
+ * const adapter = createLocalStorageAdapter();
+ * if (adapter) {
+ *   const client = createSorokitClient({ network: "testnet", persistenceAdapter: adapter });
+ * }
+ */
+export function createLocalStorageAdapter(
+  storageKey = "sorokit:wallet",
+): PersistenceAdapter | null {
+  if (
+    typeof globalThis.localStorage === "undefined" ||
+    globalThis.localStorage === null
+  ) {
+    return null;
+  }
+
+  return {
+    save(key: string, value: WalletState): void {
+      try {
+        globalThis.localStorage.setItem(
+          `${storageKey}:${key}`,
+          JSON.stringify(value),
+        );
+      } catch {
+        // Storage quota exceeded or security error — silently ignore
+      }
+    },
+
+    load(key: string): WalletState | null {
+      try {
+        const raw = globalThis.localStorage.getItem(`${storageKey}:${key}`);
+        if (raw === null) return null;
+        const parsed = JSON.parse(raw) as WalletState;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          typeof parsed.connected === "boolean"
+        ) {
+          return parsed;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+
+    clear(key: string): void {
+      try {
+        globalThis.localStorage.removeItem(`${storageKey}:${key}`);
+      } catch {
+        // Silently ignore
+      }
+    },
+  };
+}
+
+export {
+  discoverHardwareWallets,
+  getHardwareWalletPublicKey,
+  signTransactionWithHardwareWallet,
+} from "./hardwareWallet";
+export type {
+  HardwareWalletAdapter,
+  HardwareWalletDevice,
+  HardwareWalletCapabilities,
+} from "./hardwareWallet";
+
+export { auditWalletSecurity, isHighRiskConnection } from "./securityAudit";
+export type {
+  RiskSeverity,
+  RiskConfidence,
+  RiskFactor,
+  WalletVulnerability,
+  VulnerabilitySource,
+  WalletConnectionContext,
+  WalletSecurityAuditOptions,
+  RiskLevel,
+  WalletSecurityReport,
+} from "./securityAudit";
+
+// Authentication module exports
+export {
+  WalletAuthenticationManager,
+  detectAuthenticationCapabilities,
+  isAuthenticationMethodAvailable,
+  setupPIN,
+  verifyPIN,
+  changePIN,
+  resetPIN,
+  registerWebAuthn,
+  authenticateWebAuthn,
+  InMemoryAuthenticationStorage,
+  createLocalStorageAuthenticationStorage,
+} from "./authentication";
+export type {
+  AuthenticationState,
+  AuthenticationMethod,
+  AuthenticationStatus,
+  AuthenticationConfig,
+  AuthenticationCredential,
+  AuthenticationCapabilities,
+  AuthenticationStorage,
+  PINSetupOptions,
+  PINVerificationOptions,
+  PINChangeOptions,
+  PINResetResult,
+  PINCredentialData,
+  WebAuthnRegistrationOptions,
+  WebAuthnAuthenticationOptions,
+  WebAuthnCredentialData,
+} from "./authentication";

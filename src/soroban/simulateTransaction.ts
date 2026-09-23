@@ -7,10 +7,14 @@ import {
   isXdrInvalidError,
   toMessage,
 } from "../shared";
-import type { SimulateTransactionResult } from "./types";
+import type {
+  SimulateTransactionResult,
+  SorobanSimulationFeeBreakdown,
+  SorobanSimulationResourceUsage,
+} from "./types";
 import type { SorokitCache } from "../shared/cache";
 import { createSimulationCacheKey } from "./contractCallIdentity";
-import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
+import { createSorobanServer } from "../shared/serverFactory";
 
 export interface SimulateTransactionOptions {
   cache?: SorokitCache;
@@ -28,6 +32,79 @@ function describeSimulationFailure(cause: unknown): string {
     return `Transaction simulation failed due to network connectivity: ${toMessage(cause)}`;
   }
   return `Transaction simulation failed: ${toMessage(cause)}`;
+}
+
+function stringifyFee(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return String(value);
+}
+
+function extractResourceUsage(
+  simResult: SorobanRpc.Api.SimulateTransactionSuccessResponse,
+): SorobanSimulationResourceUsage {
+  const raw = simResult as unknown as {
+    cost?: {
+      cpuInsns?: unknown;
+      memBytes?: unknown;
+    };
+    transactionData?: {
+      resources?: () => {
+        instructions?: () => unknown;
+        readBytes?: () => number;
+        writeBytes?: () => number;
+        footprint?: () => {
+          readOnly?: () => unknown[];
+          readWrite?: () => unknown[];
+        };
+      };
+    };
+  };
+
+  const resources = raw.transactionData?.resources?.();
+  const footprint = resources?.footprint?.();
+  const readLedgerEntries = footprint?.readOnly?.().length;
+  const writeLedgerEntries = footprint?.readWrite?.().length;
+  const usage: SorobanSimulationResourceUsage = {};
+  const instructions = stringifyFee(resources?.instructions?.() ?? raw.cost?.cpuInsns);
+
+  if (instructions !== undefined) usage.instructions = instructions;
+  const readBytes = resources?.readBytes?.();
+  if (readBytes !== undefined) usage.readBytes = readBytes;
+  const writeBytes = resources?.writeBytes?.() ?? (
+    typeof raw.cost?.memBytes === "number" ? raw.cost.memBytes : undefined
+  );
+  if (writeBytes !== undefined) usage.writeBytes = writeBytes;
+  if (readLedgerEntries !== undefined) usage.readLedgerEntries = readLedgerEntries;
+  if (writeLedgerEntries !== undefined) usage.writeLedgerEntries = writeLedgerEntries;
+  if (readLedgerEntries !== undefined || writeLedgerEntries !== undefined) {
+    usage.footprint = {
+      ...(readLedgerEntries !== undefined ? { readOnly: readLedgerEntries } : {}),
+      ...(writeLedgerEntries !== undefined ? { readWrite: writeLedgerEntries } : {}),
+    };
+  }
+
+  return usage;
+}
+
+function extractFeeBreakdown(
+  simResult: SorobanRpc.Api.SimulateTransactionSuccessResponse,
+): SorobanSimulationFeeBreakdown {
+  const raw = simResult as unknown as {
+    minResourceFee?: unknown;
+    refundableFee?: unknown;
+    nonRefundableFee?: unknown;
+    totalFee?: unknown;
+  };
+
+  const minResourceFee = stringifyFee(raw.minResourceFee) ?? "0";
+  const refundableFee = stringifyFee(raw.refundableFee);
+  const nonRefundableFee = stringifyFee(raw.nonRefundableFee);
+  return {
+    minResourceFee,
+    ...(refundableFee !== undefined ? { refundableFee } : {}),
+    ...(nonRefundableFee !== undefined ? { nonRefundableFee } : {}),
+    total: stringifyFee(raw.totalFee) ?? minResourceFee,
+  };
 }
 
 /**
@@ -79,7 +156,13 @@ export async function simulateTransaction(
     }
 
     if (SorobanRpc.Api.isSimulationSuccess(simResult)) {
-      const result: SimulateTransactionResult = { success: true, fee: simResult.minResourceFee ?? "0" };
+      const feeBreakdown = extractFeeBreakdown(simResult);
+      const result: SimulateTransactionResult = {
+        success: true,
+        fee: feeBreakdown.minResourceFee,
+        resourceUsage: extractResourceUsage(simResult),
+        feeBreakdown,
+      };
       if (cache && cacheKey) {
         const ttlMs = options?.ttlMs ?? 5 * 60 * 1000;
         cache.set(cacheKey, result, ttlMs);
@@ -101,3 +184,55 @@ export async function simulateTransaction(
   }
 }
 
+/**
+ * Result for a single transaction in a batch simulation.
+ * Each result is tagged with the index it was submitted at.
+ */
+export interface BatchSimulationResult {
+  /** Index of this transaction in the input array */
+  index: number;
+  /** Simulation result — ok or error */
+  result: SorokitResult<SimulateTransactionResult>;
+}
+
+/**
+ * Simulate multiple transaction XDRs concurrently via Promise.allSettled.
+ *
+ * Independent simulations execute in parallel. Results remain mapped to their
+ * source transactions by index. Partial failures do not discard successful
+ * results — each outcome is isolated.
+ *
+ * @param rpcUrl          - Soroban RPC endpoint URL
+ * @param networkPassphrase - Network passphrase (e.g. "Test SDF Network ; September 2024")
+ * @param transactionXdrs - Array of transaction XDR strings to simulate
+ * @param options         - Optional cache and TTL settings
+ * @returns Array of results in the same order as inputs, each tagged with its index
+ */
+export async function simulateTransactionBatch(
+  rpcUrl: string,
+  networkPassphrase: string,
+  transactionXdrs: string[],
+  options?: SimulateTransactionOptions,
+): Promise<BatchSimulationResult[]> {
+  if (transactionXdrs.length === 0) return [];
+
+  const settled = await Promise.allSettled(
+    transactionXdrs.map((xdr) =>
+      simulateTransaction(rpcUrl, networkPassphrase, xdr, options),
+    ),
+  );
+
+  return settled.map((outcome, index) => {
+    if (outcome.status === "fulfilled") {
+      return { index, result: outcome.value };
+    }
+    return {
+      index,
+      result: err<SimulateTransactionResult>(
+        SorokitErrorCode.TX_SIMULATE_FAILED,
+        String(outcome.reason),
+        outcome.reason,
+      ),
+    };
+  });
+}

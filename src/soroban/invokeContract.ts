@@ -1,6 +1,7 @@
 import { err, SorokitErrorCode } from "../shared/response";
 import type { SorokitResult } from "../shared/response";
 import { toMessage } from "../shared";
+import { profileOperation } from "../shared/metrics";
 import type { SorokitLogger } from "../shared/logger";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import type { ContractInvokeParams, SorobanPollConfig } from "./types";
@@ -47,6 +48,30 @@ export interface InvokeContractOptions {
  * @returns `ok(txHash)` on success, or an error result.
  */
 export async function invokeContract(
+  rpcUrl: string,
+  networkConfig: ResolvedNetworkConfig,
+  horizonUrl: string,
+  params: ContractInvokeParams,
+  signFn: (xdr: string) => Promise<string>,
+  pollConfig?: SorobanPollConfig,
+  logger?: SorokitLogger,
+  invokeOptions?: InvokeContractOptions,
+): Promise<SorokitResult<string>> {
+  return profileOperation("soroban.invokeContract", () =>
+    invokeContractInner(
+      rpcUrl,
+      networkConfig,
+      horizonUrl,
+      params,
+      signFn,
+      pollConfig,
+      logger,
+      invokeOptions,
+    ),
+  );
+}
+
+async function invokeContractInner(
   rpcUrl: string,
   networkConfig: ResolvedNetworkConfig,
   horizonUrl: string,

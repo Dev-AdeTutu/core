@@ -6,4 +6,5 @@ export type {
   WalletAdapter,
   SignTransactionInput,
   SWKInstance,
+  WalletCapabilities,
 } from "../types";

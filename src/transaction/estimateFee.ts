@@ -154,6 +154,8 @@ export interface FeeEstimate {
    * transactions. Present only when `includeCongestionEstimate` is true.
    */
   congestion?: CongestionFeeEstimate;
+  /** The priority level applied to this estimate. Undefined when no priority was requested. */
+  priority?: TransactionPriority;
 }
 
 /**
@@ -174,7 +176,55 @@ export interface CongestionFeeEstimate {
   congestionLevel: "low" | "medium" | "high";
 }
 
+/** Transaction urgency level for priority-adjusted fee estimation. */
+export type TransactionPriority = "low" | "normal" | "high" | "urgent";
+
+/** Fee multipliers applied per priority level. */
+export interface PriorityMultipliers {
+  low: number;
+  normal: number;
+  high: number;
+  urgent: number;
+}
+
+/** Default multipliers: 0.5× low, 1× normal, 2× high, 5× urgent. */
+export const DEFAULT_PRIORITY_MULTIPLIERS: PriorityMultipliers = {
+  low: 0.5,
+  normal: 1,
+  high: 2,
+  urgent: 5,
+};
+
 /** Optional hooks and cache for fee estimation. */
+export interface AdaptiveFeeOptions {
+  urgency?: TransactionPriority;
+  feeHistory?: number[];
+  minMultiplier?: number;
+  maxMultiplier?: number;
+}
+
+/** Calculate a bounded fee recommendation from urgency and recent observations. */
+export function calculateAdaptiveFee(
+  baseFee: number,
+  options: AdaptiveFeeOptions = {},
+): number {
+  if (!Number.isFinite(baseFee) || baseFee <= 0) return parseInt(BASE_FEE, 10);
+  const urgency = options.urgency ?? "normal";
+  const urgencyMultiplier = DEFAULT_PRIORITY_MULTIPLIERS[urgency];
+  const history = (options.feeHistory ?? []).filter((fee) => Number.isFinite(fee) && fee > 0);
+  let trendMultiplier = 1;
+  if (history.length >= 2) {
+    const first = history[0] ?? baseFee;
+    const last = history[history.length - 1] ?? first;
+    const trend = Math.max(-0.25, Math.min(0.5, (last - first) / first));
+    trendMultiplier += trend;
+  }
+  const minMultiplier = Math.max(0.1, options.minMultiplier ?? 0.5);
+  const maxMultiplier = Math.max(minMultiplier, options.maxMultiplier ?? 5);
+  const multiplier = Math.max(minMultiplier, Math.min(maxMultiplier, urgencyMultiplier * trendMultiplier));
+  return Math.max(parseInt(BASE_FEE, 10), Math.round(baseFee * multiplier));
+}
+
 export interface FeeEstimateOptions {
   /** Client-level cache for storing the recent median fee */
   cache?: SorokitCache;
@@ -187,6 +237,23 @@ export interface FeeEstimateOptions {
    * congestion-aware min/recommended/max fees (issue #193).
    */
   includeCongestionEstimate?: boolean;
+  /**
+   * Transaction urgency. Applies a multiplier to the base simulated fee.
+   * Defaults to "normal" (1× multiplier). The result is clamped to BASE_FEE.
+   */
+  priority?: TransactionPriority;
+  /** Alias for priority, using urgency terminology. */
+  urgency?: TransactionPriority;
+  /** Recent network fee observations used to adjust the recommendation. */
+  feeHistory?: number[];
+  /** Lower bound for adaptive urgency/trend multiplier. */
+  minMultiplier?: number;
+  /** Upper bound for adaptive urgency/trend multiplier. */
+  maxMultiplier?: number;
+  /**
+   * Override the default priority multipliers. Omit to use DEFAULT_PRIORITY_MULTIPLIERS.
+   */
+  priorityMultipliers?: PriorityMultipliers;
 }
 
 /** Number of recent transactions fetched to compute congestion-aware percentiles. */
@@ -435,8 +502,15 @@ export async function estimateFee(
       }
       xdr = input.transactionXdr;
     } else {
-      // Build a minimal sample payment transaction to simulate
+      // Validate amount is positive before building the transaction
       const { publicKey, destination, amount, assetCode, assetIssuer } = input;
+      const parsedAmount = parseFloat(amount);
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        return err(
+          SorokitErrorCode.TX_BUILD_FAILED,
+          "Amount must be positive",
+        );
+      }
       const horizonServer = createHorizonServer(horizonUrl);
       const sourceAccount = await horizonServer.loadAccount(publicKey);
 
@@ -501,6 +575,25 @@ export async function estimateFee(
       simulated = false;
     }
 
+    // Apply urgency and bounded network-trend adjustment only when requested;
+    // callers that omit these options retain the historical estimate exactly.
+    const priority = options?.priority ?? options?.urgency;
+    if (priority || options?.feeHistory?.length) {
+      const multipliers = options?.priorityMultipliers ?? DEFAULT_PRIORITY_MULTIPLIERS;
+      const urgencyFee = calculateAdaptiveFee(feeStroops, {
+        ...(priority ? { urgency: priority } : {}),
+        feeHistory: options?.feeHistory ?? getFeeHistory(networkConfig.networkPassphrase),
+        ...(options?.minMultiplier !== undefined ? { minMultiplier: options.minMultiplier } : {}),
+        ...(options?.maxMultiplier !== undefined ? { maxMultiplier: options.maxMultiplier } : {}),
+      });
+      if (priority && options?.priorityMultipliers) {
+        const customMultiplier = multipliers[priority];
+        feeStroops = Math.max(parseInt(BASE_FEE, 10), Math.round(feeStroops * customMultiplier));
+      } else {
+        feeStroops = urgencyFee;
+      }
+    }
+
     const feeXlm = (feeStroops / 10_000_000).toFixed(7);
     const feeEstimate: FeeEstimate = {
       fee: String(feeStroops),
@@ -508,6 +601,7 @@ export async function estimateFee(
       feeXlm,
       baseFee: BASE_FEE,
       simulated,
+      ...(priority ? { priority } : {}),
     };
 
     if (options?.includeTiers) {

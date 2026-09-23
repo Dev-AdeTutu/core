@@ -41,6 +41,16 @@ export interface ContractUpgradeEvent {
   currentVersion: string;
 }
 
+/** A single entry in a contract's version history. */
+export interface ContractVersionHistoryEntry {
+  /** Version string observed. */
+  version: string;
+  /** ISO-8601 timestamp when this version was first observed. */
+  observedAt: string;
+  /** Whether this was an upgrade from a previous version, or the initial observation. */
+  isUpgrade: boolean;
+}
+
 /** Application-defined migration hook fired on observed version changes. */
 export type OnContractUpgrade = (event: ContractUpgradeEvent) => void;
 
@@ -66,6 +76,7 @@ interface ObservedVersionEntry {
 
 const versionMemoryCache = new Map<string, VersionCacheEntry>();
 const observedVersions = new Map<string, ObservedVersionEntry>();
+const versionHistory = new Map<string, ContractVersionHistoryEntry[]>();
 const MAX_MEMORY_CACHE_ENTRIES = 100;
 
 function versionCacheKey(contractId: string): string {
@@ -254,6 +265,15 @@ function recordObservation(
 
   setObservedVersion(contractId, currentVersion, options?.cache);
 
+  // Record version history
+  const history = versionHistory.get(contractId) ?? [];
+  history.push({
+    version: currentVersion,
+    observedAt: new Date().toISOString(),
+    isUpgrade: previous !== undefined && previous !== null,
+  });
+  versionHistory.set(contractId, history);
+
   if (
     previous !== undefined &&
     previous !== null &&
@@ -288,5 +308,17 @@ export function resetContractVersionTracking(
   cache?: SorokitCache,
 ): void {
   observedVersions.delete(contractId);
+  versionHistory.delete(contractId);
   cache?.invalidate(observedCacheKey(contractId));
+}
+
+/**
+ * Return the full version history for a contract, ordered chronologically
+ * (oldest first). Each entry records when a version was first observed and
+ * whether it was an upgrade from a prior version.
+ */
+export function getContractVersionHistory(
+  contractId: string,
+): ContractVersionHistoryEntry[] {
+  return versionHistory.get(contractId) ?? [];
 }

@@ -1,4 +1,4 @@
-import { SorokitErrorCode } from "./response";
+import { err, SorokitErrorCode } from "./response";
 import type { SorokitResult } from "./response";
 
 /**
@@ -14,14 +14,7 @@ export interface TokenAsset {
  */
 export function validateAssetCode(code: string): SorokitResult<void> {
   if (!code || typeof code !== "string" || code.trim().length === 0) {
-    return {
-      status: "error",
-      data: null,
-      error: {
-        code: SorokitErrorCode.INVALID_CONFIG,
-        message: "Asset code must be a non-empty string",
-      },
-    };
+    return err(SorokitErrorCode.INVALID_CONFIG, "Asset code must be a non-empty string");
   }
   return { status: "ok", data: undefined, error: null };
 }
@@ -33,14 +26,10 @@ export function validateAssetIssuer(
   issuer: string | null,
 ): SorokitResult<void> {
   if (issuer !== null && (typeof issuer !== "string" || issuer.length === 0)) {
-    return {
-      status: "error",
-      data: null,
-      error: {
-        code: SorokitErrorCode.INVALID_CONFIG,
-        message: "Asset issuer must be null (native) or a non-empty string",
-      },
-    };
+    return err(
+      SorokitErrorCode.INVALID_CONFIG,
+      "Asset issuer must be null (native) or a non-empty string",
+    );
   }
   return { status: "ok", data: undefined, error: null };
 }
@@ -72,8 +61,9 @@ export function normalizePairId(
   asset1: TokenAsset,
   asset2: TokenAsset,
 ): string {
-  const sorted = [asset1, asset2].sort((a, b) => a.code.localeCompare(b.code));
-  const first = sorted[0];
-  const second = sorted[1];
-  return `${first!.code}/${second!.code}`;
+  const [first, second]: [TokenAsset, TokenAsset] =
+    asset1.code.localeCompare(asset2.code) <= 0
+      ? [asset1, asset2]
+      : [asset2, asset1];
+  return `${first.code}/${second.code}`;
 }

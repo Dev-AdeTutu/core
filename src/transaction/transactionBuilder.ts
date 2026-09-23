@@ -128,19 +128,19 @@ export function createTransactionBuilder(): TransactionBuilder {
     },
 
     undo(): TransactionOperation | undefined {
-      if (_history.length === 0) {
+      const op = _history.pop();
+      if (op === undefined) {
         return undefined;
       }
-      const op = _history.pop()!;
       _redoStack.push(op);
       return op;
     },
 
     redo(): TransactionOperation | undefined {
-      if (_redoStack.length === 0) {
+      const op = _redoStack.pop();
+      if (op === undefined) {
         return undefined;
       }
-      const op = _redoStack.pop()!;
       _history.push(op);
       return op;
     },

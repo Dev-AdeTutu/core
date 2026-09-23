@@ -11,6 +11,7 @@ import {
 import {
   addSignatureToEnvelope,
   connectWallet,
+  createLocalStorageAdapter,
   detectInstalledWallets,
   disconnectWallet,
   signTransaction,
@@ -21,6 +22,8 @@ import {
   prioritizeWallet,
   recommendWallets,
   removeSignatureFromEnvelope,
+  createSigningChallenge,
+  mergeSignatures,
 } from "../wallet/index";
 import {
   InMemorySigningHistoryStore,
@@ -1484,5 +1487,53 @@ describe("adapter signTransaction() with browser simulation (#274)", () => {
         expect(result.error.code).toBe(SorokitErrorCode.WALLET_SIGN_REJECTED);
       }
     }
+  });
+});
+
+describe("signing delegation", () => {
+  it("collects partial signatures and completes when all required signers are present", () => {
+    const envelopeXdr = createUnsignedEnvelopeXdr();
+    const challenge = createSigningChallenge(envelopeXdr, ["GA", "GB"], {
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const partial = mergeSignatures(challenge, [
+      { signer: "GA", signature: createDecoratedSignature() },
+    ]);
+    const complete = mergeSignatures(partial.challenge, [
+      {
+        signer: "GB",
+        signature: createDecoratedSignature(Buffer.from([4, 3, 2, 1])),
+      },
+    ]);
+
+    expect(partial.complete).toBe(false);
+    expect(partial.missingSigners).toEqual(["GB"]);
+    expect(complete.complete).toBe(true);
+    expect(envelopeSignatures(complete.transactionXdr)).toHaveLength(2);
+  });
+
+  it("rejects duplicate and expired delegated signatures", () => {
+    const envelopeXdr = createUnsignedEnvelopeXdr();
+    const challenge = createSigningChallenge(envelopeXdr, ["GA"], {
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    expect(() =>
+      mergeSignatures(challenge, [
+        { signer: "GA", signature: createDecoratedSignature() },
+        {
+          signer: "GA",
+          signature: createDecoratedSignature(Buffer.from([9, 9, 9, 9])),
+        },
+      ]),
+    ).toThrow(/Duplicate signature/);
+
+    const expired = createSigningChallenge(envelopeXdr, ["GA"], {
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+    expect(() =>
+      mergeSignatures(expired, [{ signer: "GA", signature: createDecoratedSignature() }]),
+    ).toThrow(/expired/);
   });
 });

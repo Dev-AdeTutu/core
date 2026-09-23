@@ -21,6 +21,31 @@ export interface WalletState {
   walletType: WalletType | null;
 }
 
+export type WalletCapabilityId =
+  | "account.read"
+  | "account.multi"
+  | "account.switch"
+  | "transaction.sign"
+  | "transaction.sign_multisig"
+  | "transaction.sign_soroban"
+  | "hardware.signing"
+  | "qr.signing"
+  | (string & {});
+
+export type WalletCapabilitySource = "adapter" | "fallback";
+
+export interface WalletCapability {
+  id: WalletCapabilityId;
+  supported: boolean;
+  source: WalletCapabilitySource;
+  description?: string;
+}
+
+export interface WalletCapabilities {
+  walletType: WalletType;
+  capabilities: WalletCapability[];
+  supports(capability: string): boolean;
+}
 export interface SignTransactionInput {
   /** XDR-encoded transaction to sign */
   transactionXdr: string;
@@ -61,6 +86,12 @@ export interface WalletAdapter {
 
   /** Sign a transaction XDR and return the signed XDR */
   signTransaction(input: SignTransactionInput): Promise<SorokitResult<string>>;
+
+  /**
+   * Optional: declare wallet capabilities without granting permission to skip
+   * the adapter's normal runtime validation.
+   */
+  getCapabilities?(): WalletCapabilities;
 
   /**
    * Optional: return all public keys currently accessible from the wallet.
@@ -178,4 +209,28 @@ export interface DetectedWallet {
 export interface RecommendationCriteria {
   /** Return only wallets that support ALL of the listed features. */
   features?: WalletFeature[];
+}
+
+/**
+ * Pluggable persistence adapter for wallet state.
+ *
+ * Implementations handle serialising and restoring `WalletState` across page
+ * reloads or application restarts.  The core never touches browser storage
+ * directly — it delegates to the adapter provided in the client config.
+ *
+ * @example
+ * // localStorage adapter
+ * const adapter: PersistenceAdapter = {
+ *   save: (key, state) => localStorage.setItem(key, JSON.stringify(state)),
+ *   load: (key) => JSON.parse(localStorage.getItem(key) ?? "null"),
+ *   clear: (key) => localStorage.removeItem(key),
+ * };
+ */
+export interface PersistenceAdapter {
+  /** Persist wallet state under the given key. */
+  save(key: string, value: WalletState): void;
+  /** Load previously persisted wallet state, or `null` when absent. */
+  load(key: string): WalletState | null;
+  /** Remove persisted wallet state under the given key. */
+  clear(key: string): void;
 }

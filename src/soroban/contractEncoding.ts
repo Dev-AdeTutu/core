@@ -9,7 +9,7 @@
  */
 
 import { xdr, nativeToScVal, scValToNative } from "@stellar/stellar-sdk";
-import type { ContractMethod } from "./types";
+import type { ContractAbiField, ContractAbiTypeDescriptor, ContractMethod } from "./types";
 
 // ─── Decode ───────────────────────────────────────────────────────────────────
 
@@ -148,8 +148,57 @@ export function encodeContractArgs(
   });
 }
 
-function encodeValue(type: string, value: unknown, label: string): xdr.ScVal {
-  const normalizedType = type.toLowerCase().trim();
+export function encodeAbiValue(
+  type: string | ContractAbiTypeDescriptor,
+  value: unknown,
+  label = "value",
+): xdr.ScVal {
+  return encodeValue(type, value, label);
+}
+
+export function decodeAbiValue(
+  scVal: xdr.ScVal,
+  type?: string | ContractAbiTypeDescriptor,
+): unknown {
+  if (!type) return decodeContractValue(scVal);
+
+  const descriptor = normalizeAbiType(type);
+  const decoded = decodeContractValue(scVal);
+
+  if (descriptor.fields && typeof decoded === "object" && decoded !== null) {
+    const source = decoded as Record<string, unknown>;
+    return descriptor.fields.reduce<Record<string, unknown>>((acc, field) => {
+      acc[field.name] = source[field.name];
+      return acc;
+    }, {});
+  }
+
+  return decoded;
+}
+
+export function serializeCustomType(
+  fields: ContractAbiField[],
+  value: Record<string, unknown>,
+  label = "custom",
+): xdr.ScVal {
+  return encodeValue({ type: "struct", fields }, value, label);
+}
+
+function normalizeAbiType(type: string | ContractAbiTypeDescriptor): ContractAbiTypeDescriptor {
+  return typeof type === "string" ? { type } : type;
+}
+
+function normalizeTypeName(type: string | ContractAbiTypeDescriptor): string {
+  return normalizeAbiType(type).type.toLowerCase().trim();
+}
+
+function encodeValue(
+  type: string | ContractAbiTypeDescriptor,
+  value: unknown,
+  label: string,
+): xdr.ScVal {
+  const descriptor = normalizeAbiType(type);
+  const normalizedType = normalizeTypeName(descriptor);
 
   switch (normalizedType) {
     case "bool":
@@ -207,10 +256,17 @@ function encodeValue(type: string, value: unknown, label: string): xdr.ScVal {
       return nativeToScVal(value, { type: "address" });
 
     case "vec":
+    case "array": {
       if (!Array.isArray(value)) {
         throw new TypeError(`${label}: expected array (vec), got ${typeof value}`);
       }
-      return xdr.ScVal.scvVec(value.map((item) => nativeToScVal(item)));
+      const itemType = descriptor.elementType ?? descriptor.valueType;
+      return xdr.ScVal.scvVec(
+        value.map((item, index) =>
+          itemType ? encodeValue(itemType, item, `${label}[${index}]`) : nativeToScVal(item),
+        ),
+      );
+    }
 
     case "map": {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -219,10 +275,33 @@ function encodeValue(type: string, value: unknown, label: string): xdr.ScVal {
       const entries = Object.entries(value as Record<string, unknown>).map(
         ([k, v]) =>
           new xdr.ScMapEntry({
-            key: xdr.ScVal.scvString(Buffer.from(k, "utf8")),
-            val: nativeToScVal(v),
+            key: descriptor.keyType
+              ? encodeValue(descriptor.keyType, k, `${label}.key`)
+              : xdr.ScVal.scvString(Buffer.from(k, "utf8")),
+            val: descriptor.valueType
+              ? encodeValue(descriptor.valueType, v, `${label}.${k}`)
+              : nativeToScVal(v),
           }),
       );
+      return xdr.ScVal.scvMap(entries);
+    }
+
+    case "struct":
+    case "custom": {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new TypeError(`${label}: expected object (${normalizedType}), got ${typeof value}`);
+      }
+      const input = value as Record<string, unknown>;
+      const fields = descriptor.fields ?? [];
+      const entries = fields.map((field) => {
+        if (!(field.name in input)) {
+          throw new TypeError(`${label}: missing field "${field.name}"`);
+        }
+        return new xdr.ScMapEntry({
+          key: xdr.ScVal.scvSymbol(field.name),
+          val: encodeValue(field.type, input[field.name], `${label}.${field.name}`),
+        });
+      });
       return xdr.ScVal.scvMap(entries);
     }
 
