@@ -18,6 +18,7 @@ import { isValidContractId } from "../shared/utils";
 import { DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS } from "../shared/constants";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import type { ContractInvokeParams, PreparedContractCall } from "./types";
+import { validatePublicKey } from "../shared/validation";
 import { validateContractMethodMetadata, validateContractArgs } from "./contractMetadata";
 import { validateContractAbi } from "./validateContractAbi";
 import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
@@ -62,6 +63,16 @@ export async function prepareContractCall(
       `Invalid contract ID: '${params.contractId}'. Expected a C-prefixed 56-character Stellar base32 string.`,
     );
   }
+
+  // ── Validate the invoking account public key before any network call ───────
+  const pkResult = validatePublicKey(params.publicKey);
+  if (pkResult.status === "error") {
+    return err(
+      SorokitErrorCode.CONTRACT_PREPARE_FAILED,
+      `publicKey — ${pkResult.error.message}`,
+    );
+  }
+  // ── End input validation ───────────────────────────────────────────────────
 
   if (!params.method || params.method.trim().length === 0) {
     return err(

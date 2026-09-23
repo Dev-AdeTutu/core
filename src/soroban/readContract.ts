@@ -17,6 +17,7 @@ import { createContractReadCacheKey } from "./contractCallIdentity";
 import type { ContractCallResult, ContractReadParams } from "./types";
 import { validateContractAbi } from "./validateContractAbi";
 import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
+import { validatePublicKey } from "../shared/validation";
 
 /**
  * Read (simulate) a Soroban contract view function — no signing required.
@@ -55,6 +56,16 @@ export async function readContract(
   networkConfig: ResolvedNetworkConfig,
   params: ContractReadParams,
 ): Promise<SorokitResult<ContractCallResult>> {
+  // ── Input validation (before any network call or side effect) ──────────────
+  const pkResult = validatePublicKey(params.publicKey);
+  if (pkResult.status === "error") {
+    return err(
+      SorokitErrorCode.CONTRACT_READ_FAILED,
+      `publicKey — ${pkResult.error.message}`,
+    );
+  }
+  // ── End input validation ───────────────────────────────────────────────────
+
   const abiValidation = validateContractAbi({
     contractAbi: params.contractAbi,
     method: params.method,

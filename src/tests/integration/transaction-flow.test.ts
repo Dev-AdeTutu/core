@@ -77,8 +77,8 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SOURCE_KEY = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA";
-const DEST_KEY = "GBBD47IF6LWK5P7V6XZCHJSAXTSPG4FJHOUOHAUZTF5YQK4Q2GB7S7V2";
+const SOURCE_KEY = "GAJ6WXK2MNMSMPHEJT5CKAX6DMATQ46J2DLWQPNKSD6IKKDZCDH5K2Z7";
+const DEST_KEY = "GCFP4TMUPUM5SXQUPDDAZKP4TX62JDVIJXNCU2XJY2F2NIQHNEGV43DL";
 const MOCK_XDR = "AAAAAQAAAAA=";
 const TX_HASH = "abc123def456";
 
@@ -266,7 +266,7 @@ describe("integration: buildPayment → sign → submit", () => {
 
     const buildResult = await clientResult.data.transaction.buildTrustline(SOURCE_KEY, {
       assetCode: "USDC",
-      assetIssuer: "GBBD47IF6LWK5P7V6XZCHJSAXTSPG4FJHOUOHAUZTF5YQK4Q2GB7S7V2",
+      assetIssuer: "GA7I5PB7WF2UEITAMSZHI6Q7BOI3SP4NKV2NMRFTGDDBBPGIWTF5FEAH",
     });
 
     expect(buildResult.status).toBe("ok");
