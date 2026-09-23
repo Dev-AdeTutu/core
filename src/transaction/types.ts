@@ -247,106 +247,103 @@ export interface MultiSigEnvelope {
   thresholdMet: boolean;
 }
 
-export interface ManageOfferParams extends MemoParams {
-  /**
-   * Asset being sold. Omit or set to "XLM" for the native asset.
-   */
-  sellingAssetCode?: string;
-  sellingAssetIssuer?: string;
-  /**
-   * Asset being bought. Omit or set to "XLM" for the native asset.
-   */
-  buyingAssetCode?: string;
-  buyingAssetIssuer?: string;
-  /**
-   * Amount of the selling asset to offer. Set to "0" (with a non-zero offerId)
-   * to cancel an existing offer.
-   */
-  amount: string;
-  /**
-   * Price of 1 unit of the selling asset expressed in the buying asset.
-   * Accepts a decimal string ("1.5") or an exact rational ({ n: 3, d: 2 }).
-   */
-  price: string | { n: number; d: number };
-  /**
-   * Offer ID:
-   *   - "0" (default) — create a new offer.
-   *   - Non-zero string — update or cancel an existing offer.
-   */
-  offerId?: string;
-  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
-  autoFetchSequence?: boolean;
+// ─── Claimable balances (#543) ────────────────────────────────────────────────
+
+export type ClaimPredicateType =
+  | "unconditional"
+  | "beforeAbsoluteTime"
+  | "afterAbsoluteTime"
+  | "beforeRelativeTime"
+  | "afterRelativeTime"
+  | "and"
+  | "or"
+  | "not";
+
+/**
+ * A claim predicate controlling when a claimable balance can be claimed.
+ *
+ * - `unconditional` — claimable at any time.
+ * - `beforeAbsoluteTime` — claimable until the given Unix timestamp (seconds).
+ * - `afterAbsoluteTime` — claimable after the given Unix timestamp (seconds).
+ * - `beforeRelativeTime` — claimable until `seconds` after balance creation.
+ * - `afterRelativeTime` — claimable `seconds` after balance creation.
+ * - `and`/`or` — combine at least two child predicates.
+ * - `not` — negates a single child predicate.
+ *
+ * @example // Claimable between 2023-11-01 and 2023-12-01 (unilateral window)
+ * { type: "and", predicates: [
+ *   { type: "afterAbsoluteTime", timestamp: 1698796800 },
+ *   { type: "beforeAbsoluteTime", timestamp: 1701392400 },
+ * ] }
+ */
+export interface ClaimPredicateInput {
+  type: ClaimPredicateType;
+  /** Unix timestamp (seconds) required by absolute-time predicates. */
+  timestamp?: string | number;
+  /** Relative seconds required by relative-time predicates. */
+  seconds?: string | number;
+  /** Children for `and` / `or` predicates (at least two). */
+  predicates?: ClaimPredicateInput[];
+  /** Child for the `not` predicate. */
+  predicate?: ClaimPredicateInput;
 }
 
-export interface ClawbackParams extends MemoParams {
-  /**
-   * Asset code to clawback. Must be a non-native issued asset (1–12 alphanumeric chars).
-   */
-  assetCode: string;
-  /**
-   * G-address of the asset issuer. The transaction source account must match this address.
-   */
-  assetIssuer: string;
-  /**
-   * G-address of the account to clawback from.
-   */
-  from: string;
-  /**
-   * Amount to clawback. Must be positive with at most 7 decimal places.
-   */
+export interface CreateClaimableBalanceParams extends MemoParams {
+  /** Asset to lock. Either an `Asset` instance or `assetCode`/`assetIssuer`. */
+  asset?: import("@stellar/stellar-sdk").Asset;
+  assetCode?: string;
+  assetIssuer?: string;
+  /** Amount to lock: positive, at most 7 decimal places. */
   amount: string;
-  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
+  /** Account allowed to claim. Stellar (G...) or muxed (M...) address. */
+  claimant: string;
+  /** Claim predicate controlling when the balance may be claimed. */
+  predicate: ClaimPredicateInput;
+  /** When true, reuses a 5-second module-level sequence cache. */
   autoFetchSequence?: boolean;
+  /**
+   * Pre-fetched sequence number for the source account. When provided, no
+   * Horizon `loadAccount` call is made — the transaction is built offline.
+   */
+  sequenceNumber?: string;
+  /** Pre-fetched fee in stroops. When provided, replaces BASE_FEE. */
+  estimatedFee?: string;
 }
 
-export interface LiquidityPoolDepositParams extends MemoParams {
+export interface ClaimClaimableBalanceParams extends MemoParams {
   /**
-   * 64-character hex ID of the liquidity pool to deposit into.
+   * Claimable balance ID as hex (8-byte discriminant + 32-byte hash),
+   * e.g. `"000000007f18e80..."`.
    */
-  liquidityPoolId: string;
-  /**
-   * Maximum amount of asset A to deposit. Must be positive, ≤7 decimal places.
-   */
-  maxAmountA: string;
-  /**
-   * Maximum amount of asset B to deposit. Must be positive, ≤7 decimal places.
-   */
-  maxAmountB: string;
-  /**
-   * Minimum price (A/B ratio) acceptable for the deposit.
-   * Accepts a decimal string ("0.4") or a rational ({ n: 2, d: 5 }).
-   * Must be positive and less than maxPrice.
-   */
-  minPrice: string | { n: number; d: number };
-  /**
-   * Maximum price (A/B ratio) acceptable for the deposit.
-   * Accepts a decimal string ("0.6") or a rational ({ n: 3, d: 5 }).
-   * Must be positive and greater than minPrice.
-   */
-  maxPrice: string | { n: number; d: number };
-  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
+  balanceId: string;
+  /** When true, reuses a 5-second module-level sequence cache. */
   autoFetchSequence?: boolean;
+  /**
+   * Pre-fetched sequence number for the source account. When provided, no
+   * Horizon `loadAccount` call is made — the transaction is built offline.
+   */
+  sequenceNumber?: string;
+  /** Pre-fetched fee in stroops. When provided, replaces BASE_FEE. */
+  estimatedFee?: string;
 }
 
-export interface LiquidityPoolWithdrawParams extends MemoParams {
+// ─── Bump sequence (#554) ─────────────────────────────────────────────────────
+
+export interface BumpSequenceParams extends MemoParams {
   /**
-   * 64-character hex ID of the liquidity pool to withdraw from.
+   * Sequence number to bump to. Must be a stringified integer greater than the
+   * source account's current sequence and at most `2^64 - 1`.
    */
-  liquidityPoolId: string;
-  /**
-   * Number of pool shares to redeem. Must be positive, ≤7 decimal places.
-   */
-  amount: string;
-  /**
-   * Minimum amount of asset A to receive. Must be positive, ≤7 decimal places.
-   */
-  minAmountA: string;
-  /**
-   * Minimum amount of asset B to receive. Must be positive, ≤7 decimal places.
-   */
-  minAmountB: string;
-  /** When true, reuses a 5-second module-level sequence cache to avoid repeated Horizon round trips. */
+  bumpToSequence: string;
+  /** When true, reuses a 5-second module-level sequence cache. */
   autoFetchSequence?: boolean;
+  /**
+   * Pre-fetched sequence number for the source account. When provided, no
+   * Horizon `loadAccount` call is made — the transaction is built offline.
+   */
+  sequenceNumber?: string;
+  /** Pre-fetched fee in stroops. When provided, replaces BASE_FEE. */
+  estimatedFee?: string;
 }
 
 export type { FeeEstimate, FeeEstimateOptions } from "./estimateFee";

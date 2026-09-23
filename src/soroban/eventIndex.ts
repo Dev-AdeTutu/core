@@ -1,204 +1,135 @@
-// ── Types ─────────────────────────────────────────────────────────────────────
+/**
+ * Event deduplication index for real-time contract event streaming (#541).
+ *
+ * The Soroban RPC `getEvents` cursor only advances per page — overlapping
+ * ledger ranges can re-deliver events. `EventIndex` uses a hash of each event's
+ * stable identifiers to suppress duplicates while bounding memory usage.
+ */
 
-/** Normalized representation of an indexed Soroban contract event. */
-export interface IndexedContractEvent {
-  /** Globally unique event identifier (contractId + ledger + topic hash). */
-  id: string;
-  /** Contract address that emitted the event. */
-  contractId: string;
-  /** Account address of the transaction source that produced the event. */
-  emitter: string;
-  /** Decoded topic strings from the event envelope. */
-  topics: string[];
-  /** Ledger sequence number when the event was emitted. */
-  ledger: number;
-  /** ISO-8601 timestamp of the ledger close. */
-  timestamp: string;
-  /** Event type / name (e.g. "transfer", "mint"). */
-  eventType: string;
-  /** Raw value payload — storage-agnostic, left as received. */
-  value: unknown;
-}
-
-/** Filtering options for queryIndexedEvents(). */
-export interface IndexedEventFilter {
-  /** Restrict to events from this contract address. */
-  contractId?: string;
-  /** Restrict to events of this type. */
-  eventType?: string;
-  /** Restrict to events emitted by this account. */
-  emitter?: string;
-  /** Restrict to a topic string or pattern. Matches any topic in the topics array. */
-  topic?: string | RegExp;
-  /** ISO-8601 start of time range (inclusive). */
-  since?: string;
-  /** ISO-8601 end of time range (inclusive). */
-  until?: string;
-}
-
-/** Pagination options for queryIndexedEvents(). */
-export interface IndexedEventPage {
-  /** Opaque cursor from a previous page response. Omit for the first page. */
-  cursor?: string;
-  /** Maximum events per page. Defaults to 100. */
-  limit?: number;
-}
-
-/** Paginated result returned by queryIndexedEvents(). */
-export interface IndexedEventQueryResult {
-  events: IndexedContractEvent[];
-  /** Cursor for the next page. Undefined when no further results exist. */
-  nextCursor?: string;
-  total: number;
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function matchesTopic(topics: string[], pattern: string | RegExp): boolean {
-  return topics.some((t) =>
-    pattern instanceof RegExp ? pattern.test(t) : t === pattern,
-  );
-}
-
-function inTimeRange(timestamp: string, since?: string, until?: string): boolean {
-  const ts = Date.parse(timestamp);
-  if (Number.isNaN(ts)) return false;
-  if (since && ts < Date.parse(since)) return false;
-  if (until && ts > Date.parse(until)) return false;
-  return true;
-}
-
-function deriveSyntheticId(event: Omit<IndexedContractEvent, "id">): string {
-  return `${event.contractId}:${event.ledger}:${event.eventType}:${event.topics.join("|")}`;
-}
-
-// ── In-memory index ───────────────────────────────────────────────────────────
+import type { ContractEvent } from "./subscribeContractEvents";
 
 /**
- * Storage-agnostic in-memory event index.
- *
- * The SDK defines the indexing/query contract without forcing consumers into a
- * specific database. To persist events, wrap this class or implement the same
- * interface backed by your storage layer.
+ * Hash a string into a 53-bit unsigned integer using FNV-1a.
+ * Deterministic and dependency-free, so it runs identically in Node and
+ * browsers. 53-bit (Number safe integer range) keeps collisions negligible
+ * while avoiding BigInt overhead.
  */
-export class InMemoryEventIndex {
-  private readonly events: Map<string, IndexedContractEvent> = new Map();
+export function hashString(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function topicPart(topic: string | null | undefined): string {
+  if (topic == null) return "";
+  // Accept either raw strings (Horizon records) or base64-encoded XDR topics.
+  return String(topic);
+}
+
+/**
+ * Build a stable hash for a contract event.
+ *
+ * Prefers the RPC-provided `id`/`pagingToken` when present — they are unique
+ * per event on a given node. As a fallback, hashes the identity-bearing fields
+ * (contract id, ledger, transaction hash, paging token, topic) so identical
+ * events re-delivered across a cursor boundary still collide.
+ */
+export function hashEvent(event: ContractEvent): string {
+  const id = String(event.id ?? "");
+  if (id && id !== "undefined") {
+    const pagingToken = String(event.pagingToken ?? event.txHash ?? "");
+    return `id:${pagingToken}${id}`;
+  }
+
+  const contractId = String(event.contractId ?? event.contract_id ?? "");
+  const ledger = String(event.ledger ?? "");
+  const txHash = String(event.txHash ?? event.tx_hash ?? "");
+  const pagingToken = String(event.pagingToken ?? event.paging_token ?? "");
+  const topics = (event.topics ?? event.topic ?? [])
+    .map(topicPart)
+    .join("|");
+  const value = String(event.value ?? "");
+
+  const canonical = [
+    contractId,
+    ledger,
+    txHash,
+    pagingToken,
+    topics,
+    value,
+  ].join("::");
+  return `hash:${hashString(canonical).toString(36)}`;
+}
+
+/**
+ * Bounded in-memory index of recently-seen events.
+ *
+ * Purely uses sampling of the insertion order (`Set` iteration order) to evict
+ * the oldest entries once the capacity is reached, bounding memory use while
+ * keeping the stream deduplicated.
+ */
+export class EventIndex {
+  private readonly seen = new Set<string>();
+  private readonly maxSize: number;
 
   /**
-   * Index a single contract event. Duplicate ingestion is handled safely —
-   * events with the same id are silently ignored.
-   *
-   * @returns true when the event was stored, false when it was a duplicate.
+   * @param maxSize - Maximum number of event hashes to retain. Defaults to 10000.
    */
-  index(event: IndexedContractEvent): boolean {
-    if (this.events.has(event.id)) return false;
-    this.events.set(event.id, event);
-    return true;
+  constructor(maxSize = 10_000) {
+    this.maxSize = maxSize > 0 ? Math.floor(maxSize) : 10_000;
+  }
+
+  /** Whether this event has already been seen (without marking it). */
+  has(event: ContractEvent): boolean {
+    return this.seen.has(hashEvent(event));
   }
 
   /**
-   * Query indexed events with optional filters and pagination.
-   *
-   * Results are returned in ascending ledger order.
-   * Default page size: 100.
+   * Mark the event as seen. Returns `true` when it was a duplicate
+   * (already present), `false` on first sight.
    */
-  query(filter?: IndexedEventFilter, page?: IndexedEventPage): IndexedEventQueryResult {
-    const limit = Math.min(Math.max(1, page?.limit ?? 100), 1000);
-
-    let all = Array.from(this.events.values()).sort((a, b) => a.ledger - b.ledger);
-
-    if (filter) {
-      if (filter.contractId) {
-        all = all.filter((e) => e.contractId === filter.contractId);
-      }
-      if (filter.eventType) {
-        all = all.filter((e) => e.eventType === filter.eventType);
-      }
-      if (filter.emitter) {
-        all = all.filter((e) => e.emitter === filter.emitter);
-      }
-      if (filter.topic !== undefined) {
-        all = all.filter((e) => matchesTopic(e.topics, filter.topic!));
-      }
-      if (filter.since || filter.until) {
-        all = all.filter((e) => inTimeRange(e.timestamp, filter.since, filter.until));
-      }
-    }
-
-    const total = all.length;
-
-    // Cursor-based pagination: cursor is the id of the last event on the previous page
-    let startIdx = 0;
-    if (page?.cursor) {
-      const cursorIdx = all.findIndex((e) => e.id === page.cursor);
-      if (cursorIdx !== -1) startIdx = cursorIdx + 1;
-    }
-
-    const slice = all.slice(startIdx, startIdx + limit);
-    const nextCursor = startIdx + limit < total ? slice[slice.length - 1]?.id : undefined;
-    const result: IndexedEventQueryResult = { events: slice, total };
-    if (nextCursor !== undefined) {
-      result.nextCursor = nextCursor;
-    }
-    return result;
+  add(event: ContractEvent): boolean {
+    const key = hashEvent(event);
+    if (this.seen.has(key)) return true;
+    this.seen.add(key);
+    this.evictIfNeeded();
+    return false;
   }
 
-  /** Total number of events currently held in the index. */
-  size(): number {
-    return this.events.size;
-  }
-
-  /** Remove all events from the index. */
+  /** Order-independent clear — used for test isolation. */
   clear(): void {
-    this.events.clear();
+    this.seen.clear();
+  }
+
+  /** Number of events currently retained. */
+  get size(): number {
+    return this.seen.size;
+  }
+
+  private evictIfNeeded(): void {
+    while (this.seen.size > this.maxSize) {
+      const oldest = this.seen.values().next();
+      if (oldest.done) break;
+      this.seen.delete(oldest.value);
+    }
   }
 }
 
-// ── Factory / normalizer ──────────────────────────────────────────────────────
-
 /**
- * Normalize a raw event object into an IndexedContractEvent and index it.
- *
- * @param index - The target InMemoryEventIndex (or compatible implementation).
- * @param raw   - Raw event from the Horizon/RPC response.
- * @returns true if the event was newly indexed, false if it was a duplicate.
+ * Convenience filter: `events.filter((event) => index.isNew(event))` marks
+ * new events as seen and drops anything already indexed.
  */
-export function indexContractEvent(
-  index: InMemoryEventIndex,
-  raw: {
-    contractId?: string;
-    emitter?: string;
-    topics?: string[];
-    ledger?: number;
-    timestamp?: string;
-    eventType?: string;
-    type?: string;
-    value?: unknown;
-    id?: string;
-  },
-): boolean {
-  const contractId = raw.contractId ?? "";
-  const emitter = raw.emitter ?? "";
-  const topics = raw.topics ?? [];
-  const ledger = raw.ledger ?? 0;
-  const timestamp = raw.timestamp ?? new Date().toISOString();
-  const eventType = raw.eventType ?? raw.type ?? "";
-  const value = raw.value;
-
-  const base = { contractId, emitter, topics, ledger, timestamp, eventType, value };
-  const id = raw.id ?? deriveSyntheticId(base);
-
-  return index.index({ ...base, id });
-}
-
-/**
- * Query events directly from an InMemoryEventIndex without constructing
- * the class externally. Mirrors the acceptance criteria's `queryContractEvents` shape.
- */
-export function queryIndexedEvents(
-  index: InMemoryEventIndex,
-  filter?: IndexedEventFilter,
-  page?: IndexedEventPage,
-): IndexedEventQueryResult {
-  return index.query(filter, page);
+export function filterNewEvents<T extends ContractEvent>(
+  index: EventIndex,
+  events: T[],
+): T[] {
+  const fresh: T[] = [];
+  for (const event of events) {
+    if (index.add(event)) continue;
+    fresh.push(event);
+  }
+  return fresh;
 }

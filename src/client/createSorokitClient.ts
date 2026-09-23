@@ -31,6 +31,13 @@ import {
   buildAccountMerge,
 } from "../transaction/buildTransaction";
 import type { AccountMergeOptions } from "../transaction/buildTransaction";
+import {
+  buildCreateClaimableBalance,
+  buildClaimClaimableBalance,
+} from "../transaction/claimableBalance";
+import { buildBumpSequenceTransaction } from "../transaction/bumpSequence";
+import { compose } from "../transaction/compose";
+import type { ComposeOptions } from "../transaction/compose";
 import { submitTransaction } from "../transaction/submitTransaction";
 import { getTransactionStatus } from "../transaction/status";
 import { estimateFee } from "../transaction/estimateFee";
@@ -51,6 +58,8 @@ import {
 } from "../soroban/executeContract";
 import { invokeContract } from "../soroban/invokeContract";
 import { getContractMethods } from "../soroban/contractMetadata";
+import { streamContractEventsRealTime } from "../soroban/streamContractEventsRealTime";
+import type { StreamContractEventsRealTimeOptions } from "../soroban/streamContractEventsRealTime";
 import { createContractStateTracker } from "../soroban/contractStateTracker";
 import {
   createLogger,
@@ -113,6 +122,9 @@ import type {
   AccountCreateParams,
   TransactionResult,
   PathPaymentParams,
+  CreateClaimableBalanceParams,
+  ClaimClaimableBalanceParams,
+  BumpSequenceParams,
 } from "../transaction/types";
 import type {
   FeeEstimate,
@@ -137,6 +149,7 @@ import type {
   SorobanPollConfig,
   SimulateTransactionResult,
 } from "../soroban/types";
+import type { ContractEvent } from "../soroban/subscribeContractEvents";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -369,6 +382,32 @@ export interface SorokitClient {
       options?: AccountMergeOptions,
       timeoutMs?: number,
     ): Promise<SorokitResult<string>>;
+    /** Build a create claimable balance transaction XDR (unsigned) (#543) */
+    buildCreateClaimableBalance(
+      sourcePublicKey: string,
+      params: CreateClaimableBalanceParams,
+      timeoutMs?: number,
+    ): Promise<SorokitResult<string>>;
+    /** Build a claim claimable balance transaction XDR (unsigned) (#543) */
+    buildClaimClaimableBalance(
+      sourcePublicKey: string,
+      params: ClaimClaimableBalanceParams,
+      timeoutMs?: number,
+    ): Promise<SorokitResult<string>>;
+    /** Build a bump sequence transaction XDR (unsigned) (#554) */
+    buildBumpSequence(
+      sourcePublicKey: string,
+      params: BumpSequenceParams,
+      timeoutMs?: number,
+    ): Promise<SorokitResult<string>>;
+    /**
+     * Start a fluent multi-operation transaction builder bound to this client's
+     * network config. Call `.build()` on the returned builder for the XDR (#542).
+     */
+    compose(
+      sourcePublicKey: string,
+      options?: ComposeOptions,
+    ): ReturnType<typeof compose>;
     /** Submit a signed transaction XDR */
     submit(
       signedXdr: string,
@@ -478,6 +517,15 @@ export interface SorokitClient {
       params: ContractReadParams,
       timeoutMs?: number,
     ): Promise<SorokitResult<ContractCallResult>>;
+    /**
+     * Stream contract events in near real-time via the Soroban RPC `getEvents`
+     * endpoint. Applies cursor pagination, exponential backoff with jitter on
+     * transient failures, and hash-based deduplication (#541).
+     */
+    streamContractEventsRealTime(
+      contractId: string,
+      options?: Omit<StreamContractEventsRealTimeOptions, "rpcUrl">,
+    ): AsyncGenerator<ContractEvent[]>;
   };
 
   readonly network: {
@@ -1191,6 +1239,74 @@ export function createSorokitClient(
             },
           ).then(applyTx),
         ),
+      buildCreateClaimableBalance: (sourcePublicKey, params, timeoutMs) =>
+        guard("tx_build", timeoutMs, () =>
+          withErrorHandling(
+            errorHandler,
+            {
+              functionName: "transaction.buildCreateClaimableBalance",
+              params: { sourcePublicKey, ...params },
+            },
+            () => {
+              logger.debug("transaction.buildCreateClaimableBalance", {
+                sourcePublicKey,
+              });
+              return buildCreateClaimableBalance(
+                horizonUrl,
+                networkConfig,
+                sourcePublicKey,
+                params,
+                client.trustedIssuers,
+              );
+            },
+          ).then(applyTx),
+        ),
+      buildClaimClaimableBalance: (sourcePublicKey, params, timeoutMs) =>
+        guard("tx_build", timeoutMs, () =>
+          withErrorHandling(
+            errorHandler,
+            {
+              functionName: "transaction.buildClaimClaimableBalance",
+              params: { sourcePublicKey, balanceId: params.balanceId },
+            },
+            () => {
+              logger.debug("transaction.buildClaimClaimableBalance", {
+                sourcePublicKey,
+              });
+              return buildClaimClaimableBalance(
+                horizonUrl,
+                networkConfig,
+                sourcePublicKey,
+                params,
+              );
+            },
+          ).then(applyTx),
+        ),
+      buildBumpSequence: (sourcePublicKey, params, timeoutMs) =>
+        guard("tx_build", timeoutMs, () =>
+          withErrorHandling(
+            errorHandler,
+            {
+              functionName: "transaction.buildBumpSequence",
+              params: { sourcePublicKey, bumpToSequence: params.bumpToSequence },
+            },
+            () => {
+              logger.debug("transaction.buildBumpSequence", {
+                sourcePublicKey,
+              });
+              return buildBumpSequenceTransaction(
+                horizonUrl,
+                networkConfig,
+                sourcePublicKey,
+                params,
+              );
+            },
+          ).then(applyTx),
+        ),
+      compose: (sourcePublicKey, options) => {
+        logger.debug("transaction.compose", { sourcePublicKey });
+        return compose(sourcePublicKey, networkConfig, options);
+      },
       submit: async (signedXdr, timeoutMs) =>
         guard("tx_submit", timeoutMs, (signal) =>
           withErrorHandling(
@@ -1438,6 +1554,13 @@ export function createSorokitClient(
               ),
           ).then(applyTx),
         ),
+      streamContractEventsRealTime: (contractId, options) => {
+        logger.debug("soroban.streamContractEventsRealTime", { contractId });
+        return streamContractEventsRealTime(contractId, {
+          rpcUrl,
+          ...options,
+        });
+      },
     },
 
     network: {
