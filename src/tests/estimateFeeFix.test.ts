@@ -6,7 +6,10 @@ import {
   DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS,
   DEFAULT_TX_TIMEOUT_SECONDS,
 } from "../shared/constants";
-import { BASE_FEE } from "@stellar/stellar-sdk";
+import { BASE_FEE, Keypair } from "@stellar/stellar-sdk";
+
+// Use a real valid public key so input validation passes in readContract/prepareContractCall.
+const VALID_PUBLIC_KEY = Keypair.random().publicKey();
 
 const MOCK_XDR = "AAAAAQAAAAA=";
 const transactionBuilderInstances: any[] = [];
@@ -168,7 +171,7 @@ describe("estimateFeeFix", () => {
   it("verifies that readContract uses DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS", async () => {
     mocks.loadAccount.mockResolvedValue({
       sequenceNumber: "1",
-      id: "G...",
+      id: VALID_PUBLIC_KEY,
     });
     mocks.isSimulationSuccess.mockReturnValue(true);
     mocks.isSimulationError.mockReturnValue(false);
@@ -182,7 +185,7 @@ describe("estimateFeeFix", () => {
       networkConfig,
       {
         contractId: "CD123",
-        publicKey: "G...",
+        publicKey: VALID_PUBLIC_KEY,
         method: "hello",
         args: [],
       }
@@ -196,7 +199,7 @@ describe("estimateFeeFix", () => {
   it("verifies that prepareContractCall uses DEFAULT_SOROBAN_TX_TIMEOUT_SECONDS", async () => {
     mocks.loadAccount.mockResolvedValue({
       sequenceNumber: "1",
-      id: "G...",
+      id: VALID_PUBLIC_KEY,
     });
     mocks.isSimulationSuccess.mockReturnValue(true);
     mocks.isSimulationError.mockReturnValue(false);
@@ -216,7 +219,7 @@ describe("estimateFeeFix", () => {
       networkConfig.horizonUrl,
       {
         contractId: "CD123",
-        publicKey: "G...",
+        publicKey: VALID_PUBLIC_KEY,
         method: "hello",
         args: [],
       }

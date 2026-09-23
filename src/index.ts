@@ -949,9 +949,9 @@ export type {
 } from "./shared/utils";
 
 // ─── Token validation utilities (#352) ────────────────────────────────────────
+// validateAssetCode and validateAssetIssuer are re-exported from the centralised
+// validation module below (they supersede the void-returning variants here).
 export {
-  validateAssetCode,
-  validateAssetIssuer,
   validateTokenAsset,
   isSameAsset,
   normalizePairId,
@@ -1231,3 +1231,18 @@ export type {
   SdkHealthOptions,
   EndpointCheckOptions,
 } from "./shared/diagnostics";
+
+// ─── Centralised input validation ─────────────────────────────────────────────
+// Five validators covering the most common input types across the SDK.
+// All return SorokitResult<string> and never throw.
+export {
+  validateStellarAddress,
+  validatePublicKey,
+  validateAssetCode,
+  validateAssetIssuer,
+  validateAmount,
+  STELLAR_MAX_DECIMAL_PLACES,
+  STELLAR_MAX_AMOUNT,
+  STELLAR_MAX_ASSET_CODE_LENGTH,
+  STELLAR_MIN_ASSET_CODE_LENGTH,
+} from "./shared/validation";

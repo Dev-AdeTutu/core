@@ -13,6 +13,13 @@ import type { SorokitResult } from "../shared/response";
 
 import { validateIssuer } from "../shared/validateIssuer";
 import { profileOperation } from "../shared/metrics";
+import {
+  validateStellarAddress,
+  validatePublicKey,
+  validateAmount,
+  validateAssetCode,
+  validateAssetIssuer,
+} from "../shared/validation";
 
 import {
   isNetworkConnectivityError,
@@ -363,6 +370,27 @@ async function buildPaymentTransactionInner(
   params: PaymentParams,
   trustedIssuers?: string[] | null,
 ): Promise<SorokitResult<string>> {
+  // ── Input validation (before any network call or side effect) ──────────────
+  const sourcePkResult = validatePublicKey(sourcePublicKey);
+  if (sourcePkResult.status === "error") return sourcePkResult;
+
+  const destResult = validateStellarAddress(params.destination);
+  if (destResult.status === "error") return destResult;
+
+  const amountResult = validateAmount(params.amount);
+  if (amountResult.status === "error") return amountResult;
+
+  if (params.assetCode && params.assetCode.toUpperCase() !== "XLM") {
+    const codeResult = validateAssetCode(params.assetCode);
+    if (codeResult.status === "error") return codeResult;
+
+    if (params.assetIssuer) {
+      const issuerResult = validateAssetIssuer(params.assetIssuer);
+      if (issuerResult.status === "error") return issuerResult;
+    }
+  }
+  // ── End input validation ───────────────────────────────────────────────────
+
   const assetResult = resolveAsset(params.assetCode, params.assetIssuer);
   if (assetResult.status === "error") return assetResult;
 
@@ -459,6 +487,17 @@ export async function buildCreateAccountTransaction(
   sourcePublicKey: string,
   params: AccountCreateParams,
 ): Promise<SorokitResult<string>> {
+  // ── Input validation (before any network call or side effect) ──────────────
+  const sourcePkResult = validatePublicKey(sourcePublicKey);
+  if (sourcePkResult.status === "error") return sourcePkResult;
+
+  const destResult = validateStellarAddress(params.destination);
+  if (destResult.status === "error") return destResult;
+
+  const balanceResult = validateAmount(params.startingBalance);
+  if (balanceResult.status === "error") return balanceResult;
+  // ── End input validation ───────────────────────────────────────────────────
+
   const memoResult = validateMemoParams(params);
   if (memoResult.status === "error") return memoResult;
 
@@ -531,6 +570,17 @@ export async function buildTrustlineTransaction(
   params: TrustlineParams,
   trustedIssuers?: string[] | null,
 ): Promise<SorokitResult<string>> {
+  // ── Input validation (before any network call or side effect) ──────────────
+  const sourcePkResult = validatePublicKey(sourcePublicKey);
+  if (sourcePkResult.status === "error") return sourcePkResult;
+
+  const codeResult = validateAssetCode(params.assetCode);
+  if (codeResult.status === "error") return codeResult;
+
+  const issuerResult = validateAssetIssuer(params.assetIssuer);
+  if (issuerResult.status === "error") return issuerResult;
+  // ── End input validation ───────────────────────────────────────────────────
+
   // Validate issuer against whitelist if configured
   if (
     trustedIssuers !== null &&

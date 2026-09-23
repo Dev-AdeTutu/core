@@ -11,6 +11,10 @@ import type { SorokitResult } from "../shared/response";
 import { isSameAsset } from "../shared/validateToken";
 import { toMessage } from "../shared";
 import { createHorizonServer } from "../shared/serverFactory";
+import {
+  validateStellarAddress,
+  validateAmount,
+} from "../shared/validation";
 
 /**
  * Asset in a swap path.
@@ -297,20 +301,20 @@ export async function discoverPaymentPaths(
   destAmount: string,
   options?: DiscoverPaymentPathsOptions,
 ): Promise<SorokitResult<PaymentPathDiscoveryResult>> {
-  if (!StrKey.isValidEd25519PublicKey(source)) {
-    return err(SorokitErrorCode.INVALID_ADDRESS, `Invalid source account address: ${source}`);
+  // ── Input validation (before any network call or side effect) ──────────────
+  const sourceAddrResult = validateStellarAddress(source);
+  if (sourceAddrResult.status === "error") {
+    return err(SorokitErrorCode.INVALID_ADDRESS, `source — ${sourceAddrResult.error.message}`);
   }
-  if (!StrKey.isValidEd25519PublicKey(destination)) {
-    return err(SorokitErrorCode.INVALID_ADDRESS, `Invalid destination account address: ${destination}`);
+  const destAddrResult = validateStellarAddress(destination);
+  if (destAddrResult.status === "error") {
+    return err(SorokitErrorCode.INVALID_ADDRESS, `destination — ${destAddrResult.error.message}`);
   }
-
-  const destAmountNum = Number(destAmount);
-  if (!Number.isFinite(destAmountNum) || destAmountNum <= 0) {
-    return err(
-      SorokitErrorCode.ROUTER_INVALID_PATH,
-      `destAmount must be a positive numeric string, got: ${destAmount}`,
-    );
+  const amtResult = validateAmount(destAmount);
+  if (amtResult.status === "error") {
+    return err(SorokitErrorCode.ROUTER_INVALID_PATH, `destAmount — ${amtResult.error.message}`);
   }
+  // ── End input validation ───────────────────────────────────────────────────
 
   if (
     !destinationAsset ||
