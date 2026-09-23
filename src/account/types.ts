@@ -87,6 +87,125 @@ export interface BalanceAlertRule {
 }
 
 /**
+ * The string type identifier returned by Horizon for each operation.
+ * Matches `HorizonApi.OperationResponseType` values.
+ */
+export type OperationType =
+  | "create_account"
+  | "payment"
+  | "path_payment_strict_receive"
+  | "path_payment_strict_send"
+  | "manage_sell_offer"
+  | "manage_buy_offer"
+  | "create_passive_sell_offer"
+  | "set_options"
+  | "change_trust"
+  | "allow_trust"
+  | "account_merge"
+  | "inflation"
+  | "manage_data"
+  | "bump_sequence"
+  | "create_claimable_balance"
+  | "claim_claimable_balance"
+  | "begin_sponsoring_future_reserves"
+  | "end_sponsoring_future_reserves"
+  | "revoke_sponsorship"
+  | "clawback"
+  | "clawback_claimable_balance"
+  | "set_trust_line_flags"
+  | "liquidity_pool_deposit"
+  | "liquidity_pool_withdraw"
+  | "invoke_host_function"
+  | "bump_footprint_expiration"
+  | "restore_footprint";
+
+/**
+ * A normalised representation of a single Stellar operation returned by Horizon.
+ * All core fields from `BaseOperationResponse` are always present.
+ * Type-specific fields (amount, asset, destination, etc.) are carried in `raw`
+ * for consumers that need them without us having to enumerate every variant.
+ */
+export interface OperationInfo {
+  /** Horizon-assigned operation ID (string to avoid BigInt issues). */
+  id: string;
+  /** Cursor token for pagination — pass as `cursor` to resume from this record. */
+  pagingToken: string;
+  /** G-address of the account that submitted this operation. */
+  sourceAccount: string;
+  /** Human-readable operation type string (e.g. "payment", "create_account"). */
+  type: OperationType;
+  /** ISO 8601 timestamp when the operation was included in a ledger. */
+  createdAt: string;
+  /** Hash of the transaction that contains this operation. */
+  transactionHash: string;
+  /** Whether the parent transaction succeeded. */
+  transactionSuccessful: boolean;
+  /**
+   * The raw Horizon record, typed as `Record<string, unknown>` for access to
+   * operation-specific fields (amount, asset_code, destination, etc.) without
+   * requiring a switch on `type`.
+   */
+  raw: Record<string, unknown>;
+}
+
+/**
+ * Options for `getOperations()`.
+ */
+export interface GetOperationsOptions {
+  /**
+   * Filter to operations of this type only. Client-side filter applied after
+   * Horizon returns results (Horizon's `forAccount` does not support type
+   * filtering natively).
+   */
+  type?: OperationType;
+  /**
+   * Only return operations whose `source_account` matches this G-address.
+   * Client-side filter.
+   */
+  sourceAccount?: string;
+  /**
+   * Only return operations created on or after this ISO 8601 date-time string.
+   * Client-side filter.
+   */
+  after?: string;
+  /**
+   * Only return operations created before this ISO 8601 date-time string.
+   * Client-side filter.
+   */
+  before?: string;
+  /**
+   * Cursor for pagination. Pass the `pagingToken` of the last record from the
+   * previous page to fetch the next page.
+   */
+  cursor?: string;
+  /**
+   * Maximum number of records to return per page. Defaults to 20, max 200.
+   */
+  limit?: number;
+  /**
+   * Sort order. Defaults to "desc" (newest first).
+   */
+  order?: "asc" | "desc";
+  /**
+   * Whether to include operations from failed transactions. Defaults to false.
+   */
+  includeFailed?: boolean;
+}
+
+/**
+ * Paginated result returned by `getOperations()`.
+ */
+export interface OperationsPage {
+  /** The operations on this page, after any client-side filters are applied. */
+  operations: OperationInfo[];
+  /**
+   * Paging token of the last record on this page. Pass as `cursor` to fetch
+   * the next page. `null` when the page is empty.
+   */
+  nextCursor: string | null;
+}
+
+/**
  * An alert emitted when a {@link BalanceAlertRule} condition is crossed.
  */
 export interface BalanceAlert {

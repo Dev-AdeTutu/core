@@ -22,6 +22,7 @@ import {
   isNotFoundError,
   retryWithBackoff,
 } from "../shared";
+import { isValidPublicKey } from "../shared/utils";
 import { DEFAULT_TX_TIMEOUT_SECONDS } from "../shared/constants";
 import type { ResolvedNetworkConfig } from "../shared/types";
 import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
@@ -37,6 +38,10 @@ import type {
   ReverseTransactionParams,
   PathPaymentParams,
   AtomicSwapParams,
+  ManageOfferParams,
+  ClawbackParams,
+  LiquidityPoolDepositParams,
+  LiquidityPoolWithdrawParams,
 } from "./types";
 
 // ─── Sequence cache (shared across builders for autoFetchSequence) ────────────
@@ -1666,3 +1671,811 @@ export async function buildAccountMerge(
   }
 }
 
+
+// ─── Manage Offer ─────────────────────────────────────────────────────────────
+
+/**
+ * Validate an offer amount string.
+ * Must be a non-negative decimal with at most 7 decimal places.
+ */
+function validateOfferAmount(amount: string): SorokitResult<void> {
+  if (typeof amount !== "string" || amount.trim() === "") {
+    return err(SorokitErrorCode.TX_BUILD_FAILED, "Offer amount is required.");
+  }
+
+  const amountNum = parseFloat(amount);
+  if (isNaN(amountNum) || amountNum < 0) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Offer amount must be a non-negative number, got: "${amount}".`,
+    );
+  }
+
+  const decimalMatch = amount.match(/^(\d+)\.?(\d*)$/);
+  if (!decimalMatch) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Offer amount has an invalid format: "${amount}". Expected a non-negative decimal number.`,
+    );
+  }
+
+  const decimalPlaces = decimalMatch[2]?.length ?? 0;
+  if (decimalPlaces > 7) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Offer amount exceeds maximum precision of 7 decimal places: "${amount}".`,
+    );
+  }
+
+  return ok(undefined);
+}
+
+/**
+ * Validate an offer price value.
+ * String prices must be positive with at most 7 decimal places.
+ * Rational prices ({ n, d }) must have positive integer numerator and denominator.
+ */
+function validateOfferPrice(
+  price: string | { n: number; d: number },
+): SorokitResult<void> {
+  if (typeof price === "object") {
+    if (!Number.isInteger(price.n) || !Number.isInteger(price.d)) {
+      return err(
+        SorokitErrorCode.TX_BUILD_FAILED,
+        "Offer price numerator and denominator must be integers.",
+      );
+    }
+    if (price.n <= 0 || price.d <= 0) {
+      return err(
+        SorokitErrorCode.TX_BUILD_FAILED,
+        "Offer price numerator and denominator must both be positive.",
+      );
+    }
+    return ok(undefined);
+  }
+
+  if (typeof price !== "string" || price.trim() === "") {
+    return err(SorokitErrorCode.TX_BUILD_FAILED, "Offer price is required.");
+  }
+
+  const priceNum = parseFloat(price);
+  if (isNaN(priceNum) || priceNum <= 0) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Offer price must be a positive number, got: "${price}".`,
+    );
+  }
+
+  const decimalMatch = price.match(/^(\d+)\.?(\d*)$/);
+  if (!decimalMatch) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Offer price has an invalid format: "${price}". Expected a positive decimal number.`,
+    );
+  }
+
+  const decimalPlaces = decimalMatch[2]?.length ?? 0;
+  if (decimalPlaces > 7) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Offer price exceeds maximum precision of 7 decimal places: "${price}".`,
+    );
+  }
+
+  return ok(undefined);
+}
+
+/**
+ * Validate the offer ID string.
+ * Must be a non-negative integer string (e.g. "0", "12345").
+ */
+function validateOfferId(offerId: string): SorokitResult<void> {
+  if (!/^\d+$/.test(offerId)) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `offerId must be a non-negative integer string, got: "${offerId}".`,
+    );
+  }
+  return ok(undefined);
+}
+
+/**
+ * Build an unsigned manage sell offer transaction XDR.
+ *
+ * Supports three offer operations via a single function:
+ *
+ * - **Create** (`offerId` omitted or `"0"`, `amount > 0`):
+ *   Posts a new DEX sell offer.
+ * - **Update** (`offerId` is a non-zero existing offer ID, `amount > 0`):
+ *   Replaces the price and/or amount of an existing offer.
+ * - **Cancel** (`offerId` is a non-zero existing offer ID, `amount = "0"`):
+ *   Removes an existing offer from the order book.
+ *
+ * @param horizonUrl      - Base URL of the Horizon server.
+ * @param networkConfig   - Resolved network configuration (passphrase, URLs).
+ * @param sourcePublicKey - G-address of the account that owns the offer.
+ * @param params          - Offer parameters: selling/buying assets, amount, price, offerId.
+ * @param trustedIssuers  - Optional whitelist of trusted issuer G-addresses.
+ * @returns `ok(xdr)` — unsigned transaction XDR ready for signing,
+ *          or `error(TX_BUILD_FAILED)` on any validation or build error.
+ *
+ * @example
+ * // Post a new offer: sell 100 XLM at a price of 1.5 EURC per XLM
+ * const result = await buildManageOfferTransaction(horizonUrl, networkConfig, trader, {
+ *   sellingAssetCode: "XLM",
+ *   buyingAssetCode: "EURC",
+ *   buyingAssetIssuer: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2",
+ *   amount: "100",
+ *   price: "1.5",
+ * });
+ *
+ * @example
+ * // Cancel offer 12345
+ * const cancel = await buildManageOfferTransaction(horizonUrl, networkConfig, trader, {
+ *   sellingAssetCode: "XLM",
+ *   buyingAssetCode: "EURC",
+ *   buyingAssetIssuer: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2",
+ *   amount: "0",
+ *   price: "1",
+ *   offerId: "12345",
+ * });
+ */
+export async function buildManageOfferTransaction(
+  horizonUrl: string,
+  networkConfig: ResolvedNetworkConfig,
+  sourcePublicKey: string,
+  params: ManageOfferParams,
+  trustedIssuers?: string[] | null,
+): Promise<SorokitResult<string>> {
+  // ── Resolve assets ────────────────────────────────────────────────────────
+  const sellingResult = resolveAsset(
+    params.sellingAssetCode,
+    params.sellingAssetIssuer,
+  );
+  if (sellingResult.status === "error") return sellingResult;
+
+  const buyingResult = resolveAsset(
+    params.buyingAssetCode,
+    params.buyingAssetIssuer,
+  );
+  if (buyingResult.status === "error") return buyingResult;
+
+  // ── Selling and buying must differ ────────────────────────────────────────
+  if (sellingResult.data.equals(buyingResult.data)) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "Selling and buying assets must be different.",
+    );
+  }
+
+  // ── Issuer whitelist ──────────────────────────────────────────────────────
+  if (
+    trustedIssuers !== null &&
+    trustedIssuers !== undefined &&
+    trustedIssuers.length > 0
+  ) {
+    try {
+      if (
+        params.sellingAssetCode &&
+        params.sellingAssetCode.toUpperCase() !== "XLM" &&
+        params.sellingAssetIssuer
+      ) {
+        validateIssuer(params.sellingAssetIssuer, trustedIssuers);
+      }
+      if (
+        params.buyingAssetCode &&
+        params.buyingAssetCode.toUpperCase() !== "XLM" &&
+        params.buyingAssetIssuer
+      ) {
+        validateIssuer(params.buyingAssetIssuer, trustedIssuers);
+      }
+    } catch (cause: unknown) {
+      return err(
+        SorokitErrorCode.TX_BUILD_FAILED,
+        (cause as Error)?.message || String(cause),
+        cause,
+      );
+    }
+  }
+
+  // ── Validate amount, offerId, price ───────────────────────────────────────
+  const amountResult = validateOfferAmount(params.amount);
+  if (amountResult.status === "error") return amountResult;
+
+  const offerId = params.offerId ?? "0";
+  const offerIdResult = validateOfferId(offerId);
+  if (offerIdResult.status === "error") return offerIdResult;
+
+  // Cancellation requires a non-zero offer ID
+  if (parseFloat(params.amount) === 0 && offerId === "0") {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      'Cannot cancel an offer without a non-zero offerId. Provide the ID of the offer to cancel and set amount to "0".',
+    );
+  }
+
+  const priceResult = validateOfferPrice(params.price);
+  if (priceResult.status === "error") return priceResult;
+
+  // ── Memo ──────────────────────────────────────────────────────────────────
+  const memoResult = validateMemoParams(params);
+  if (memoResult.status === "error") return memoResult;
+
+  // ── Build transaction ─────────────────────────────────────────────────────
+  try {
+    const useCache = params.autoFetchSequence === true;
+    let sourceAccount:
+      | Account
+      | Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
+
+    if (useCache) {
+      const cached = getSequenceCacheEntry(sourcePublicKey);
+      if (cached) {
+        sourceAccount = cached;
+      } else {
+        const server = new Horizon.Server(horizonUrl);
+        sourceAccount = await server.loadAccount(sourcePublicKey);
+      }
+    } else {
+      const server = new Horizon.Server(horizonUrl);
+      sourceAccount = await server.loadAccount(sourcePublicKey);
+    }
+
+    const builder = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: networkConfig.networkPassphrase,
+    })
+      .addOperation(
+        Operation.manageSellOffer({
+          selling: sellingResult.data,
+          buying: buyingResult.data,
+          amount: params.amount,
+          price: params.price,
+          offerId,
+        }),
+      )
+      .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS);
+
+    if (memoResult.data) {
+      builder.addMemo(memoResult.data);
+    }
+
+    const tx = builder.build();
+
+    if (useCache) {
+      updateSequenceCache(sourcePublicKey, sourceAccount.sequenceNumber());
+    }
+
+    return ok(tx.toXDR());
+  } catch (cause) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      describeTransactionBuildFailure("manage offer", cause),
+      cause,
+    );
+  }
+}
+
+// ─── Clawback ─────────────────────────────────────────────────────────────────
+
+/**
+ * Validate the asset code for a clawback operation.
+ * Must be 1–12 alphanumeric characters (non-native assets only).
+ */
+function validateClawbackAssetCode(code: string): SorokitResult<void> {
+  if (typeof code !== "string" || code.trim() === "") {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "Asset code is required for a clawback operation.",
+    );
+  }
+  if (code.toUpperCase() === "XLM") {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "Clawback is not supported for the native XLM asset.",
+    );
+  }
+  if (!/^[A-Za-z0-9]{1,12}$/.test(code)) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Asset code must be 1–12 alphanumeric characters, got: "${code}".`,
+    );
+  }
+  return ok(undefined);
+}
+
+/**
+ * Validate an amount for clawback.
+ * Must be a positive decimal string with at most 7 decimal places.
+ */
+function validateClawbackAmount(amount: string): SorokitResult<void> {
+  if (typeof amount !== "string" || amount.trim() === "") {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "Clawback amount is required.",
+    );
+  }
+
+  const amountNum = parseFloat(amount);
+  if (isNaN(amountNum) || amountNum <= 0) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Clawback amount must be a positive number, got: "${amount}".`,
+    );
+  }
+
+  const decimalMatch = amount.match(/^(\d+)\.?(\d*)$/);
+  if (!decimalMatch) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Clawback amount has an invalid format: "${amount}". Expected a positive decimal number.`,
+    );
+  }
+
+  const decimalPlaces = decimalMatch[2]?.length ?? 0;
+  if (decimalPlaces > 7) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Clawback amount exceeds maximum precision of 7 decimal places: "${amount}".`,
+    );
+  }
+
+  return ok(undefined);
+}
+
+/**
+ * Build an unsigned clawback transaction XDR.
+ *
+ * The clawback operation removes a specified amount of an issued asset from a
+ * holder's account and returns it to the issuer. The transaction source account
+ * must be the asset issuer, and the asset must have clawback enabled.
+ *
+ * Clawback is used for regulatory compliance (e.g. freezing funds on a
+ * sanctioned address) or error recovery (e.g. recalling mis-sent tokens).
+ *
+ * @param horizonUrl      - Base URL of the Horizon server.
+ * @param networkConfig   - Resolved network configuration (passphrase, URLs).
+ * @param sourcePublicKey - G-address of the issuer account (must match `assetIssuer`).
+ * @param params          - Clawback parameters: assetCode, assetIssuer, from, amount.
+ * @returns `ok(xdr)` — unsigned transaction XDR ready for signing,
+ *          or `error(TX_BUILD_FAILED)` on any validation or build error.
+ *
+ * @example
+ * const result = await buildClawbackTransaction(horizonUrl, networkConfig, issuer, {
+ *   assetCode: "USDC",
+ *   assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+ *   from: "GUSER...",
+ *   amount: "1000",
+ * });
+ * if (result.status === "ok") {
+ *   const signed = await signTransaction(adapter, { transactionXdr: result.data, networkPassphrase });
+ * }
+ */
+export async function buildClawbackTransaction(
+  horizonUrl: string,
+  networkConfig: ResolvedNetworkConfig,
+  sourcePublicKey: string,
+  params: ClawbackParams,
+): Promise<SorokitResult<string>> {
+  // ── Validate asset code ───────────────────────────────────────────────────
+  const assetCodeResult = validateClawbackAssetCode(params.assetCode);
+  if (assetCodeResult.status === "error") return assetCodeResult;
+
+  // ── Validate asset issuer address ─────────────────────────────────────────
+  if (!params.assetIssuer || !isValidPublicKey(params.assetIssuer)) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `Asset issuer must be a valid Stellar G-address, got: "${params.assetIssuer ?? ""}".`,
+    );
+  }
+
+  // ── Source must be the asset issuer ───────────────────────────────────────
+  if (sourcePublicKey !== params.assetIssuer) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "The transaction source account must be the asset issuer to perform a clawback.",
+    );
+  }
+
+  // ── Validate from address ─────────────────────────────────────────────────
+  if (!params.from || !isValidPublicKey(params.from)) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `"from" must be a valid Stellar G-address, got: "${params.from ?? ""}".`,
+    );
+  }
+
+  // ── Validate amount ───────────────────────────────────────────────────────
+  const amountResult = validateClawbackAmount(params.amount);
+  if (amountResult.status === "error") return amountResult;
+
+  // ── Memo ──────────────────────────────────────────────────────────────────
+  const memoResult = validateMemoParams(params);
+  if (memoResult.status === "error") return memoResult;
+
+  // ── Build transaction ─────────────────────────────────────────────────────
+  try {
+    const useCache = params.autoFetchSequence === true;
+    let sourceAccount:
+      | Account
+      | Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
+
+    if (useCache) {
+      const cached = getSequenceCacheEntry(sourcePublicKey);
+      if (cached) {
+        sourceAccount = cached;
+      } else {
+        const server = new Horizon.Server(horizonUrl);
+        sourceAccount = await server.loadAccount(sourcePublicKey);
+      }
+    } else {
+      const server = new Horizon.Server(horizonUrl);
+      sourceAccount = await server.loadAccount(sourcePublicKey);
+    }
+
+    const asset = new Asset(params.assetCode, params.assetIssuer);
+
+    const builder = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: networkConfig.networkPassphrase,
+    })
+      .addOperation(
+        Operation.clawback({
+          asset,
+          from: params.from,
+          amount: params.amount,
+        }),
+      )
+      .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS);
+
+    if (memoResult.data) {
+      builder.addMemo(memoResult.data);
+    }
+
+    const tx = builder.build();
+
+    if (useCache) {
+      updateSequenceCache(sourcePublicKey, sourceAccount.sequenceNumber());
+    }
+
+    return ok(tx.toXDR());
+  } catch (cause) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      describeTransactionBuildFailure("clawback", cause),
+      cause,
+    );
+  }
+}
+
+// ─── Liquidity Pool ───────────────────────────────────────────────────────────
+
+/** 64 lowercase hex characters — the pool ID format Stellar uses. */
+const POOL_ID_PATTERN = /^[0-9a-fA-F]{64}$/;
+
+/**
+ * Validate a liquidity pool ID.
+ * Must be a 64-character hex string.
+ */
+function validatePoolId(poolId: string): SorokitResult<void> {
+  if (typeof poolId !== "string" || poolId.trim() === "") {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "liquidityPoolId is required.",
+    );
+  }
+  if (!POOL_ID_PATTERN.test(poolId)) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `liquidityPoolId must be a 64-character hex string, got: "${poolId}".`,
+    );
+  }
+  return ok(undefined);
+}
+
+/**
+ * Validate a positive decimal amount with at most 7 decimal places.
+ * Used for pool amounts and share counts.
+ */
+function validatePoolAmount(label: string, amount: string): SorokitResult<void> {
+  if (typeof amount !== "string" || amount.trim() === "") {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `${label} is required.`,
+    );
+  }
+  const num = parseFloat(amount);
+  if (isNaN(num) || num <= 0) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `${label} must be a positive number, got: "${amount}".`,
+    );
+  }
+  const match = amount.match(/^(\d+)\.?(\d*)$/);
+  if (!match) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `${label} has an invalid format: "${amount}". Expected a positive decimal number.`,
+    );
+  }
+  const decimals = match[2]?.length ?? 0;
+  if (decimals > 7) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `${label} exceeds maximum precision of 7 decimal places: "${amount}".`,
+    );
+  }
+  return ok(undefined);
+}
+
+/**
+ * Validate a price value used as a pool price bound.
+ * String: positive decimal, ≤7 decimal places.
+ * Rational { n, d }: both positive integers.
+ */
+function validatePoolPrice(
+  label: string,
+  price: string | { n: number; d: number },
+): SorokitResult<void> {
+  if (typeof price === "object") {
+    if (!Number.isInteger(price.n) || !Number.isInteger(price.d)) {
+      return err(
+        SorokitErrorCode.TX_BUILD_FAILED,
+        `${label} numerator and denominator must be integers.`,
+      );
+    }
+    if (price.n <= 0 || price.d <= 0) {
+      return err(
+        SorokitErrorCode.TX_BUILD_FAILED,
+        `${label} numerator and denominator must both be positive.`,
+      );
+    }
+    return ok(undefined);
+  }
+  if (typeof price !== "string" || price.trim() === "") {
+    return err(SorokitErrorCode.TX_BUILD_FAILED, `${label} is required.`);
+  }
+  const num = parseFloat(price);
+  if (isNaN(num) || num <= 0) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `${label} must be a positive number, got: "${price}".`,
+    );
+  }
+  const match = price.match(/^(\d+)\.?(\d*)$/);
+  if (!match) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `${label} has an invalid format: "${price}". Expected a positive decimal number.`,
+    );
+  }
+  const decimals = match[2]?.length ?? 0;
+  if (decimals > 7) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      `${label} exceeds maximum precision of 7 decimal places: "${price}".`,
+    );
+  }
+  return ok(undefined);
+}
+
+/** Convert a price to a comparable float for bound checking. */
+function priceToFloat(price: string | { n: number; d: number }): number {
+  if (typeof price === "object") return price.n / price.d;
+  return parseFloat(price);
+}
+
+/**
+ * Build an unsigned liquidity pool deposit transaction XDR.
+ *
+ * Deposits asset A and asset B into the specified constant-product liquidity
+ * pool. The actual amounts deposited are determined by the current pool ratio
+ * and will not exceed `maxAmountA` / `maxAmountB`. The operation fails on-chain
+ * if the pool's current price falls outside the [`minPrice`, `maxPrice`] range.
+ *
+ * @param horizonUrl      - Base URL of the Horizon server.
+ * @param networkConfig   - Resolved network configuration (passphrase, URLs).
+ * @param sourcePublicKey - G-address of the account making the deposit.
+ * @param params          - Deposit parameters: pool ID, max amounts, price bounds.
+ * @returns `ok(xdr)` — unsigned transaction XDR ready for signing,
+ *          or `error(TX_BUILD_FAILED)` on any validation or build error.
+ *
+ * @example
+ * const result = await buildLiquidityPoolDepositTransaction(horizonUrl, networkConfig, lp, {
+ *   liquidityPoolId: "abc123...64hexchars",
+ *   maxAmountA: "1000",
+ *   maxAmountB: "500",
+ *   minPrice: "0.4",
+ *   maxPrice: "0.6",
+ * });
+ */
+export async function buildLiquidityPoolDepositTransaction(
+  horizonUrl: string,
+  networkConfig: ResolvedNetworkConfig,
+  sourcePublicKey: string,
+  params: LiquidityPoolDepositParams,
+): Promise<SorokitResult<string>> {
+  // ── Pool ID ───────────────────────────────────────────────────────────────
+  const poolIdResult = validatePoolId(params.liquidityPoolId);
+  if (poolIdResult.status === "error") return poolIdResult;
+
+  // ── Amounts ───────────────────────────────────────────────────────────────
+  const maxAResult = validatePoolAmount("maxAmountA", params.maxAmountA);
+  if (maxAResult.status === "error") return maxAResult;
+
+  const maxBResult = validatePoolAmount("maxAmountB", params.maxAmountB);
+  if (maxBResult.status === "error") return maxBResult;
+
+  // ── Price bounds ──────────────────────────────────────────────────────────
+  const minPriceResult = validatePoolPrice("minPrice", params.minPrice);
+  if (minPriceResult.status === "error") return minPriceResult;
+
+  const maxPriceResult = validatePoolPrice("maxPrice", params.maxPrice);
+  if (maxPriceResult.status === "error") return maxPriceResult;
+
+  if (priceToFloat(params.minPrice) >= priceToFloat(params.maxPrice)) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      "minPrice must be less than maxPrice.",
+    );
+  }
+
+  // ── Memo ──────────────────────────────────────────────────────────────────
+  const memoResult = validateMemoParams(params);
+  if (memoResult.status === "error") return memoResult;
+
+  // ── Build transaction ─────────────────────────────────────────────────────
+  try {
+    const useCache = params.autoFetchSequence === true;
+    let sourceAccount:
+      | Account
+      | Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
+
+    if (useCache) {
+      const cached = getSequenceCacheEntry(sourcePublicKey);
+      if (cached) {
+        sourceAccount = cached;
+      } else {
+        const server = new Horizon.Server(horizonUrl);
+        sourceAccount = await server.loadAccount(sourcePublicKey);
+      }
+    } else {
+      const server = new Horizon.Server(horizonUrl);
+      sourceAccount = await server.loadAccount(sourcePublicKey);
+    }
+
+    const builder = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: networkConfig.networkPassphrase,
+    })
+      .addOperation(
+        Operation.liquidityPoolDeposit({
+          liquidityPoolId: params.liquidityPoolId,
+          maxAmountA: params.maxAmountA,
+          maxAmountB: params.maxAmountB,
+          minPrice: params.minPrice,
+          maxPrice: params.maxPrice,
+        }),
+      )
+      .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS);
+
+    if (memoResult.data) {
+      builder.addMemo(memoResult.data);
+    }
+
+    const tx = builder.build();
+
+    if (useCache) {
+      updateSequenceCache(sourcePublicKey, sourceAccount.sequenceNumber());
+    }
+
+    return ok(tx.toXDR());
+  } catch (cause) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      describeTransactionBuildFailure("liquidity pool deposit", cause),
+      cause,
+    );
+  }
+}
+
+/**
+ * Build an unsigned liquidity pool withdraw transaction XDR.
+ *
+ * Redeems a specified number of pool shares from the given liquidity pool.
+ * The operation fails on-chain if the amounts received for asset A or asset B
+ * fall below `minAmountA` / `minAmountB`.
+ *
+ * @param horizonUrl      - Base URL of the Horizon server.
+ * @param networkConfig   - Resolved network configuration (passphrase, URLs).
+ * @param sourcePublicKey - G-address of the account performing the withdrawal.
+ * @param params          - Withdraw parameters: pool ID, shares amount, min amounts.
+ * @returns `ok(xdr)` — unsigned transaction XDR ready for signing,
+ *          or `error(TX_BUILD_FAILED)` on any validation or build error.
+ *
+ * @example
+ * const result = await buildLiquidityPoolWithdrawTransaction(horizonUrl, networkConfig, lp, {
+ *   liquidityPoolId: "abc123...64hexchars",
+ *   amount: "100",
+ *   minAmountA: "400",
+ *   minAmountB: "200",
+ * });
+ */
+export async function buildLiquidityPoolWithdrawTransaction(
+  horizonUrl: string,
+  networkConfig: ResolvedNetworkConfig,
+  sourcePublicKey: string,
+  params: LiquidityPoolWithdrawParams,
+): Promise<SorokitResult<string>> {
+  // ── Pool ID ───────────────────────────────────────────────────────────────
+  const poolIdResult = validatePoolId(params.liquidityPoolId);
+  if (poolIdResult.status === "error") return poolIdResult;
+
+  // ── Shares amount ─────────────────────────────────────────────────────────
+  const sharesResult = validatePoolAmount("amount", params.amount);
+  if (sharesResult.status === "error") return sharesResult;
+
+  // ── Min receive amounts ───────────────────────────────────────────────────
+  const minAResult = validatePoolAmount("minAmountA", params.minAmountA);
+  if (minAResult.status === "error") return minAResult;
+
+  const minBResult = validatePoolAmount("minAmountB", params.minAmountB);
+  if (minBResult.status === "error") return minBResult;
+
+  // ── Memo ──────────────────────────────────────────────────────────────────
+  const memoResult = validateMemoParams(params);
+  if (memoResult.status === "error") return memoResult;
+
+  // ── Build transaction ─────────────────────────────────────────────────────
+  try {
+    const useCache = params.autoFetchSequence === true;
+    let sourceAccount:
+      | Account
+      | Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
+
+    if (useCache) {
+      const cached = getSequenceCacheEntry(sourcePublicKey);
+      if (cached) {
+        sourceAccount = cached;
+      } else {
+        const server = new Horizon.Server(horizonUrl);
+        sourceAccount = await server.loadAccount(sourcePublicKey);
+      }
+    } else {
+      const server = new Horizon.Server(horizonUrl);
+      sourceAccount = await server.loadAccount(sourcePublicKey);
+    }
+
+    const builder = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: networkConfig.networkPassphrase,
+    })
+      .addOperation(
+        Operation.liquidityPoolWithdraw({
+          liquidityPoolId: params.liquidityPoolId,
+          amount: params.amount,
+          minAmountA: params.minAmountA,
+          minAmountB: params.minAmountB,
+        }),
+      )
+      .setTimeout(DEFAULT_TX_TIMEOUT_SECONDS);
+
+    if (memoResult.data) {
+      builder.addMemo(memoResult.data);
+    }
+
+    const tx = builder.build();
+
+    if (useCache) {
+      updateSequenceCache(sourcePublicKey, sourceAccount.sequenceNumber());
+    }
+
+    return ok(tx.toXDR());
+  } catch (cause) {
+    return err(
+      SorokitErrorCode.TX_BUILD_FAILED,
+      describeTransactionBuildFailure("liquidity pool withdraw", cause),
+      cause,
+    );
+  }
+}

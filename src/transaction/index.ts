@@ -217,6 +217,10 @@ export type {
   PathPaymentParams,
   PathPaymentMode,
   AtomicSwapParams,
+  ManageOfferParams,
+  ClawbackParams,
+  LiquidityPoolDepositParams,
+  LiquidityPoolWithdrawParams,
 } from "./types";
 export type {
   ClaimPredicateType,
