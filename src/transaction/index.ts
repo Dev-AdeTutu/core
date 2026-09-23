@@ -115,6 +115,49 @@ export type {
 export { reverseTransaction, issueRefund } from "./refunds";
 export type { RefundParams, RefundDetails } from "./refunds";
 export { streamTransactions } from "./streamTransactions";
+
+// ─── Claimable balances (#543) ─────────────────────────────────────────────────
+export {
+  buildCreateClaimableBalance,
+  buildClaimClaimableBalance,
+  buildCreateClaimableBalanceOperation,
+  buildClaimClaimableBalanceOperation,
+  validateClaimableAmount,
+  validateClaimantAddress,
+  validateClaimableBalanceId,
+  validateClaimPredicate,
+  validateCreateClaimableBalanceParams,
+} from "./claimableBalance";
+
+// ─── Bump sequence (#554) ──────────────────────────────────────────────────────
+export {
+  buildBumpSequenceTransaction,
+  buildBumpSequenceOperation,
+  validateBumpSequenceValue,
+} from "./bumpSequence";
+
+// ─── Shared build helpers (#543/#554/#542) ────────────────────────────────────
+export {
+  clearBuildSequenceCache,
+  updateSequenceCache,
+} from "./buildHelpers";
+
+// ─── Fluent multi-operation builder (#542) ────────────────────────────────────
+export { compose } from "./compose";
+export type {
+  ComposeBuilder,
+  ComposeOptions,
+  ComposeNetwork,
+  ComposeAssetInput,
+  ComposePaymentParams,
+  ComposeTrustlineParams,
+  ComposeCreateAccountParams,
+  ComposeOfferParams,
+  ComposePathPaymentParams,
+  ComposeClaimableBalanceParams,
+  FeeEstimateMode,
+  PendingComposeOperation,
+} from "./compose";
 export {
   getAssetPrice,
   normalizeAsset,
@@ -174,6 +217,13 @@ export type {
   PathPaymentParams,
   PathPaymentMode,
   AtomicSwapParams,
+} from "./types";
+export type {
+  ClaimPredicateType,
+  ClaimPredicateInput,
+  CreateClaimableBalanceParams,
+  ClaimClaimableBalanceParams,
+  BumpSequenceParams,
 } from "./types";
 export type {
   FeeEstimate,

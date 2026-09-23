@@ -501,6 +501,57 @@ export class TokenBucketRateLimiter {
   }
 }
 
+/**
+ * Configuration for exponential backoff with jitter.
+ * Used by streaming loops (e.g. #541 real-time event streaming) so transient
+ * RPC failures self-heal without hammering the server.
+ */
+export interface ExponentialBackoffConfig {
+  /** Initial delay in milliseconds before the first retry. Defaults to 500. */
+  initialDelayMs?: number;
+  /** Cap on the delay in milliseconds. Defaults to 30_000 (30 seconds). */
+  maxDelayMs?: number;
+  /** Multiplier applied to the delay on each retry. Defaults to 2. */
+  factor?: number;
+  /** Apply full jitter (random 50-100% of the computed delay). Defaults to true. */
+  jitter?: boolean;
+}
+
+const DEFAULT_EXPONENTIAL_BACKOFF: Required<ExponentialBackoffConfig> = {
+  initialDelayMs: 500,
+  maxDelayMs: 30_000,
+  factor: 2,
+  jitter: true,
+};
+
+/**
+ * Compute the delay (in milliseconds) to wait before retrying after the given
+ * number of consecutive failures. Grows exponentially from `initialDelayMs`
+ * up to `maxDelayMs`. With `jitter` enabled (default), full jitter is applied
+ * so concurrent clients do not synchronise their retries.
+ *
+ * @param attempt - Number of consecutive failures so far (0 = first delay).
+ * @param config  - Optional backoff configuration overrides.
+ * @returns Milliseconds to sleep before the next attempt.
+ *
+ * @example
+ * const delay = computeBackoffDelay(attemptCount);
+ * await sleep(delay);
+ */
+export function computeBackoffDelay(
+  attempt: number,
+  config: ExponentialBackoffConfig = {},
+): number {
+  const { initialDelayMs, maxDelayMs, factor, jitter } = {
+    ...DEFAULT_EXPONENTIAL_BACKOFF,
+    ...config,
+  };
+  const exponent = Math.max(0, attempt);
+  const capped = Math.min(initialDelayMs * Math.pow(factor, exponent), maxDelayMs);
+  if (!jitter) return capped;
+  return capped / 2 + Math.random() * (capped / 2);
+}
+
 /** Module-level map of in-flight requests keyed by a caller-supplied key. */
 const _inflightRequests = new Map<string, Promise<unknown>>();
 

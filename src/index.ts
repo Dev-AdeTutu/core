@@ -570,6 +570,51 @@ export type {
 export { submitTransaction } from "./transaction/submitTransaction";
 export { getTransactionStatus } from "./transaction/status";
 
+// ─── Claimable balances (#543) ─────────────────────────────────────────────────
+export {
+  buildCreateClaimableBalance,
+  buildClaimClaimableBalance,
+  buildCreateClaimableBalanceOperation,
+  buildClaimClaimableBalanceOperation,
+  validateClaimableAmount,
+  validateClaimantAddress,
+  validateClaimableBalanceId,
+  validateClaimPredicate,
+  validateCreateClaimableBalanceParams,
+} from "./transaction/claimableBalance";
+export type {
+  ClaimPredicateType,
+  ClaimPredicateInput,
+  CreateClaimableBalanceParams,
+  ClaimClaimableBalanceParams,
+} from "./transaction/types";
+
+// ─── Bump sequence (#554) ──────────────────────────────────────────────────────
+export {
+  buildBumpSequenceTransaction,
+  buildBumpSequenceOperation,
+  validateBumpSequenceValue,
+} from "./transaction/bumpSequence";
+export type { BumpSequenceParams } from "./transaction/types";
+
+// ─── Fluent multi-operation builder (#542) ────────────────────────────────────
+export { compose } from "./transaction/compose";
+export type {
+  ComposeBuilder,
+  ComposeOptions,
+  ComposeNetwork,
+  ComposeAssetInput,
+  ComposePaymentParams,
+  ComposeTrustlineParams,
+  ComposeCreateAccountParams,
+  ComposeOfferParams,
+  ComposePathPaymentParams,
+  ComposeClaimableBalanceParams,
+  FeeEstimateMode,
+  PendingComposeOperation,
+} from "./transaction/compose";
+export { clearBuildSequenceCache } from "./transaction/buildHelpers";
+
 // ─── Soroban simulator (#210) ──────────────────────────────────────────────────
 export { SorobanSimulator } from "./soroban/simulator";
 export type {
@@ -577,6 +622,18 @@ export type {
   SorobanSimulatorOptions,
 } from "./soroban/simulator";
 export { setSorobanSimulator } from "./shared/serverFactory";
+
+// ─── Soroban real-time event streaming (#541) ──────────────────────────────────
+export { streamContractEventsRealTime } from "./soroban/streamContractEventsRealTime";
+export type {
+  StreamContractEventsRealTimeOptions,
+} from "./soroban/streamContractEventsRealTime";
+export {
+  EventIndex,
+  filterNewEvents,
+  hashEvent,
+  hashString,
+} from "./soroban/eventIndex";
 
 // ─── Soroban types ────────────────────────────────────────────────────────────
 export { simulateContractSafe } from "./soroban/simulateContractSafe";
