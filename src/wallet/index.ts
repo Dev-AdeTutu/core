@@ -101,6 +101,7 @@ const WALLET_FEATURE_MAP: Record<WalletType, WalletFeature[]> = {
   [WalletType.LOBSTR]: ["multisig"],
   [WalletType.HANA]: [],
   [WalletType.RABET]: [],
+  [WalletType.WALLETCONNECT]: ["multisig", "qr"],
 };
 
 export type EnvelopeSignatureInput = string | xdr.DecoratedSignature;

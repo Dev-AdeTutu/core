@@ -13,6 +13,7 @@ export enum WalletType {
   LOBSTR = "LOBSTR",
   HANA = "HANA",
   RABET = "RABET",
+  WALLETCONNECT = "WALLETCONNECT",
 }
 
 export interface WalletState {
