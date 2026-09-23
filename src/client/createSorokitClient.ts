@@ -97,6 +97,8 @@ import {
 } from "../shared/timeout";
 import type { NetworkType } from "../network/config";
 import { checkNetworkHealth } from "../network";
+import { createRequestDeduplicator } from "../network/requestDedup";
+import type { DedupConfig } from "../network/requestDedup";
 import type { NetworkHealthReport } from "../network";
 import type {
   WalletAdapter,
@@ -227,6 +229,8 @@ export interface SorokitClientConfig {
    * state instead of crashing.
    */
   persistenceAdapter?: PersistenceAdapter;
+  /** Request deduplication config for concurrent reads */
+  dedupe?: DedupConfig;
 }
 
 // ─── Client interface ─────────────────────────────────────────────────────────
@@ -719,6 +723,7 @@ export function createSorokitClient(
 
   // Set up distributed tracing with correlation IDs (#212).
   const traceContext = createTraceContext(traceId);
+  const deduplicator = createRequestDeduplicator(config.dedupe);
   const tracedFetch = createTracedFetch(traceContext);
 
   const defaultPollConfig = config.sorobanPoll;
@@ -1009,21 +1014,26 @@ export function createSorokitClient(
     account: {
       get: (publicKey, timeoutMs) =>
         guard("account_get", timeoutMs, (signal) =>
-          withErrorHandling(
-            errorHandler,
-            { functionName: "account.get", params: { publicKey } },
-            () =>
-              withLogging(logger, "account.get", { publicKey }, async () => {
-                const cacheKey = `account:get:${horizonUrl}:${publicKey}`;
-                if (cache) {
-                  const cachedVal = cache.get(cacheKey);
-                  if (cachedVal) return ok(cachedVal as AccountInfo);
-                }
-                const res = await getAccount(horizonUrl, publicKey, { signal });
-                if (cache && res.status === "ok") cache.set(cacheKey, res.data);
-                return res;
-              }),
-          ).then(applyTx),
+          deduplicator.deduplicate(
+            ["account.get", horizonUrl, publicKey],
+            (dedupSignal) =>
+              withErrorHandling(
+                errorHandler,
+                { functionName: "account.get", params: { publicKey } },
+                () =>
+                  withLogging(logger, "account.get", { publicKey }, async () => {
+                    const cacheKey = `account:get:${horizonUrl}:${publicKey}`;
+                    if (cache) {
+                      const cachedVal = cache.get(cacheKey);
+                      if (cachedVal) return ok(cachedVal as AccountInfo);
+                    }
+                    const res = await getAccount(horizonUrl, publicKey, { signal: dedupSignal });
+                    if (cache && res.status === "ok") cache.set(cacheKey, res.data);
+                    return res;
+                  }),
+              ).then(applyTx),
+            signal
+          )
         ),
       getAccountsBatch: (publicKeys, timeoutMs) =>
         guard("account_get_batch", timeoutMs, (signal) =>
@@ -1041,58 +1051,68 @@ export function createSorokitClient(
         ),
       getBalances: (publicKey, timeoutMs) =>
         guard("account_get_balances", timeoutMs, (signal) =>
-          withErrorHandling(
-            errorHandler,
-            { functionName: "account.getBalances", params: { publicKey } },
-            () =>
-              withLogging(
-                logger,
-                "account.getBalances",
-                { publicKey },
-                async () => {
-                  const cacheKey = `account:balances:${horizonUrl}:${publicKey}`;
-                  if (cache) {
-                    const cachedVal = cache.get(cacheKey);
-                    if (cachedVal) return ok(cachedVal as AssetBalance[]);
-                  }
-                  const res = await getBalances(horizonUrl, publicKey, { signal });
-                  if (cache && res.status === "ok") cache.set(cacheKey, res.data);
-                  return res;
-                },
-              ),
-          ).then(applyTx),
+          deduplicator.deduplicate(
+            ["account.getBalances", horizonUrl, publicKey],
+            (dedupSignal) =>
+              withErrorHandling(
+                errorHandler,
+                { functionName: "account.getBalances", params: { publicKey } },
+                () =>
+                  withLogging(
+                    logger,
+                    "account.getBalances",
+                    { publicKey },
+                    async () => {
+                      const cacheKey = `account:balances:${horizonUrl}:${publicKey}`;
+                      if (cache) {
+                        const cachedVal = cache.get(cacheKey);
+                        if (cachedVal) return ok(cachedVal as AssetBalance[]);
+                      }
+                      const res = await getBalances(horizonUrl, publicKey, { signal: dedupSignal });
+                      if (cache && res.status === "ok") cache.set(cacheKey, res.data);
+                      return res;
+                    },
+                  ),
+              ).then(applyTx),
+            signal
+          )
         ),
       getAssetBalances: (publicKey, filter, timeoutMs) =>
         guard("account_get_balances", timeoutMs, (signal) =>
-          withErrorHandling(
-            errorHandler,
-            {
-              functionName: "account.getAssetBalances",
-              params: { publicKey, filter },
-            },
-            () =>
-              withLogging(
-                logger,
-                "account.getAssetBalances",
-                { publicKey, filter },
-                async () => {
-                  const cacheKey = `account:assetBalances:${horizonUrl}:${publicKey}:${JSON.stringify(filter ?? {})}`;
-                  if (cache) {
-                    const cachedVal = cache.get(cacheKey);
-                    if (cachedVal) return ok(cachedVal as AssetBalance[]);
-                  }
-                  const res = await getAssetBalances(
-                    horizonUrl,
-                    publicKey,
-                    filter,
-                    undefined,
-                    { signal },
-                  );
-                  if (cache && res.status === "ok") cache.set(cacheKey, res.data);
-                  return res;
+          deduplicator.deduplicate(
+            ["account.getAssetBalances", horizonUrl, publicKey, filter],
+            (dedupSignal) =>
+              withErrorHandling(
+                errorHandler,
+                {
+                  functionName: "account.getAssetBalances",
+                  params: { publicKey, filter },
                 },
-              ),
-          ).then(applyTx),
+                () =>
+                  withLogging(
+                    logger,
+                    "account.getAssetBalances",
+                    { publicKey, filter },
+                    async () => {
+                      const cacheKey = `account:assetBalances:${horizonUrl}:${publicKey}:${JSON.stringify(filter ?? {})}`;
+                      if (cache) {
+                        const cachedVal = cache.get(cacheKey);
+                        if (cachedVal) return ok(cachedVal as AssetBalance[]);
+                      }
+                      const res = await getAssetBalances(
+                        horizonUrl,
+                        publicKey,
+                        filter,
+                        undefined,
+                        { signal: dedupSignal },
+                      );
+                      if (cache && res.status === "ok") cache.set(cacheKey, res.data);
+                      return res;
+                    },
+                  ),
+              ).then(applyTx),
+            signal
+          )
         ),
       stream: (publicKey, streamConfig, signal) =>
         streamAccount(horizonUrl, publicKey, streamConfig, signal, logger),
@@ -1211,14 +1231,19 @@ export function createSorokitClient(
         ),
       getStatus: (hash, timeoutMs) =>
         guard("tx_status", timeoutMs, (signal) =>
-          withErrorHandling(
-            errorHandler,
-            { functionName: "transaction.getStatus", params: { hash } },
-            () => {
-              logger.debug("transaction.getStatus", { hash });
-              return getTransactionStatus(horizonUrl, hash, cache, { signal });
-            },
-          ).then(applyTx),
+          deduplicator.deduplicate(
+            ["transaction.getStatus", horizonUrl, hash],
+            (dedupSignal) =>
+              withErrorHandling(
+                errorHandler,
+                { functionName: "transaction.getStatus", params: { hash } },
+                () => {
+                  logger.debug("transaction.getStatus", { hash });
+                  return getTransactionStatus(horizonUrl, hash, cache, { signal: dedupSignal });
+                },
+              ).then(applyTx),
+            signal
+          )
         ),
       estimateFee: (input, timeoutMs) =>
         guard("tx_estimate_fee", timeoutMs, () =>
@@ -1338,15 +1363,20 @@ export function createSorokitClient(
           ).then(applyTx),
         ),
       simulate: (transactionXdr, timeoutMs) =>
-        guard("soroban_simulate", timeoutMs, () =>
-          withErrorHandling(
-            errorHandler,
-            { functionName: "soroban.simulate" },
+        guard("soroban_simulate", timeoutMs, (signal) =>
+          deduplicator.deduplicate(
+            ["soroban.simulate", rpcUrl, networkPassphrase, transactionXdr],
             () =>
-              withLogging(logger, "soroban.simulate", {}, () =>
-                simulateTransaction(rpcUrl, networkPassphrase, transactionXdr),
-              ),
-          ).then(applyTx),
+              withErrorHandling(
+                errorHandler,
+                { functionName: "soroban.simulate" },
+                () =>
+                  withLogging(logger, "soroban.simulate", {}, () =>
+                    simulateTransaction(rpcUrl, networkPassphrase, transactionXdr),
+                  ),
+              ).then(applyTx),
+            signal
+          )
         ),
       prepare: (params, timeoutMs) =>
         guard("soroban_prepare", timeoutMs, () =>
@@ -1415,28 +1445,33 @@ export function createSorokitClient(
           ).then(applyTx),
         ),
       read: (params, timeoutMs) =>
-        guard("soroban_read", timeoutMs, () =>
-          withErrorHandling(
-            errorHandler,
-            {
-              functionName: "soroban.read",
-              params: { contractId: params.contractId, method: params.method },
-            },
+        guard("soroban_read", timeoutMs, (signal) =>
+          deduplicator.deduplicate(
+            ["soroban.read", rpcUrl, params],
             () =>
-              withLogging(
-                logger,
-                "soroban.read",
-                { contractId: params.contractId, method: params.method },
+              withErrorHandling(
+                errorHandler,
+                {
+                  functionName: "soroban.read",
+                  params: { contractId: params.contractId, method: params.method },
+                },
                 () =>
-                  readContract(rpcUrl, horizonUrl, networkConfig, {
-                    ...params,
-                    ...(params.stateTracker === undefined &&
-                    contractStateTracker !== undefined
-                      ? { stateTracker: contractStateTracker }
-                      : {}),
-                  }),
-              ),
-          ).then(applyTx),
+                  withLogging(
+                    logger,
+                    "soroban.read",
+                    { contractId: params.contractId, method: params.method },
+                    () =>
+                      readContract(rpcUrl, horizonUrl, networkConfig, {
+                        ...params,
+                        ...(params.stateTracker === undefined &&
+                        contractStateTracker !== undefined
+                          ? { stateTracker: contractStateTracker }
+                          : {}),
+                      }),
+                  ),
+              ).then(applyTx),
+            signal
+          )
         ),
     },
 
