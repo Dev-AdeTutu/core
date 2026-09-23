@@ -28,6 +28,7 @@ const ADAPTER_NAMES: Record<WalletType, string> = {
   [WalletType.LOBSTR]: "Lobstr",
   [WalletType.HANA]: "Hana",
   [WalletType.RABET]: "Rabet",
+  [WalletType.WALLETCONNECT]: "WalletConnect",
 };
 
 export function getAdapterName(walletType: WalletType): string {
