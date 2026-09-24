@@ -207,17 +207,6 @@ export type {
   ContractEventFilter,
   ContractEventSubscriptionOptions,
 } from "./subscribeContractEvents";
-export {
-  InMemoryEventIndex,
-  indexContractEvent,
-  queryIndexedEvents,
-} from "./eventIndex";
-export type {
-  IndexedContractEvent,
-  IndexedEventFilter,
-  IndexedEventPage,
-  IndexedEventQueryResult,
-} from "./eventIndex";
 export { analyzeCallOptimization } from "./callOptimization";
 export type {
   CallOptimizationReport,

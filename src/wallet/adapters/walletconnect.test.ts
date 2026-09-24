@@ -86,9 +86,7 @@ function injectSession(
   adapter: WalletConnectAdapter,
   session = makeSession(),
 ): void {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (adapter as any).client = mockClient;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (adapter as any).session = session;
 }
 

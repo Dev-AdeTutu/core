@@ -115,6 +115,7 @@ export type {
 export { reverseTransaction, issueRefund } from "./refunds";
 export type { RefundParams, RefundDetails } from "./refunds";
 export { streamTransactions } from "./streamTransactions";
+export { streamTransactionsSSE, buildTransactionSSEUrl } from "./streamTransactionsSSE";
 
 // ─── Claimable balances (#543) ─────────────────────────────────────────────────
 export {
@@ -469,9 +470,6 @@ export const EURC_MAINNET_ISSUER =
   "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2";
 export const EURC_TESTNET_ISSUER =
   "GB3Q6QDZYTHWT7E5PVS3W7FUT5GVAFC5KSZFFLPU25GO7VTC3NM2ZTVO";
-
-export { compose } from "./compose";
-export type { OperationStep, ComposedPipeline } from "./compose";
 
 export function nativeAsset(): Asset {
   return Asset.native();

@@ -41,6 +41,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check bundle size budgets and tree shaking
+        run: npm run size:check
+
       - name: Validate build exports
         run: node scripts/validate-exports.js
 
@@ -72,4 +75,4 @@ jobs:
           fi
 
       - name: Run all checks
-        run: npm run typecheck && npm run lint && (npm run test || true) && npm run build && node scripts/validate-exports.js
+        run: npm run typecheck && npm run lint && (npm run test || true) && npm run build && npm run size:check && node scripts/validate-exports.js
