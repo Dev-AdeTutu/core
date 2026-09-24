@@ -124,6 +124,42 @@ export interface AccountCreateParams extends MemoParams {
   estimatedFee?: string;
 }
 
+export interface ManageOfferParams extends MemoParams {
+  sellingAssetCode: string;
+  sellingAssetIssuer?: string;
+  buyingAssetCode: string;
+  buyingAssetIssuer?: string;
+  amount: string;
+  price: string;
+  offerId?: string;
+  autoFetchSequence?: boolean;
+}
+
+export interface ClawbackParams extends MemoParams {
+  assetCode: string;
+  assetIssuer: string;
+  from: string;
+  amount: string;
+  autoFetchSequence?: boolean;
+}
+
+export interface LiquidityPoolDepositParams extends MemoParams {
+  liquidityPoolId: string;
+  maxAmountA: string;
+  maxAmountB: string;
+  minPrice: string;
+  maxPrice: string;
+  autoFetchSequence?: boolean;
+}
+
+export interface LiquidityPoolWithdrawParams extends MemoParams {
+  liquidityPoolId: string;
+  amount: string;
+  minAmountA: string;
+  minAmountB: string;
+  autoFetchSequence?: boolean;
+}
+
 export interface PaymentWithTrustlineParams {
   /** Trustline parameters to establish before payment */
   trustline: TrustlineParams;
@@ -354,4 +390,3 @@ export type {
   ExportedTransaction,
   ExportTransactionHistoryOptions,
 } from "./exportTransactionHistory";
-

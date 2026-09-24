@@ -407,6 +407,57 @@ ac.abort();
 
 The same pattern applies to `client.transaction.stream()`.
 
+### Real-time transaction SSE
+
+Transaction streams can use Horizon Server-Sent Events to avoid polling latency.
+The `sse` and `auto` transports fall back to polling when the endpoint is
+unavailable or closes before emitting an event:
+
+```ts
+for await (const result of client.transaction.stream(publicKey, {
+  transport: "auto",
+})) {
+  if (result.status === "ok") console.log(result.data.transactions);
+}
+```
+
+### HTTP connection pooling
+
+Configure a bounded per-origin pool before creating Horizon or Soroban servers.
+Default behavior is unchanged when no pool is configured:
+
+```ts
+import { createConnectionPool, setConnectionPool } from "sorokit-core";
+
+setConnectionPool(createConnectionPool({
+  maxPoolSize: 10,
+  keepAliveTimeoutMs: 30_000,
+  socketTimeoutMs: 30_000,
+}));
+```
+
+### Metrics and profiling
+
+Use `Counter` for event counts and `Timer` for operation latency. Timers write to
+the existing bounded metrics collector and can be exported with
+`getPerformanceMetrics()` or `exportPerformanceMetrics()`:
+
+```ts
+const cacheHits = new Counter("cache.hit");
+cacheHits.increment();
+const timer = startTimer("transaction.submit");
+try {
+  await submit();
+  timer.stop(true);
+} catch (error) {
+  timer.stop(false);
+  throw error;
+}
+```
+
+Applications that only need one subsystem can use the tree-shakeable
+`sorokit-core/wallet` and `sorokit-core/account` entry points.
+
 ---
 
 ## Networks

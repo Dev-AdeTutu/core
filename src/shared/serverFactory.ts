@@ -13,8 +13,10 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
 import type { SorobanSimulator } from "../soroban/simulator";
+import type { ConnectionPool } from "../network/connectionPool";
 
 let tracedFetch: typeof globalThis.fetch | undefined;
+let connectionPool: ConnectionPool | undefined;
 let activeSimulator: SorobanSimulator | null = null;
 
 /**
@@ -30,6 +32,16 @@ export function setTracedFetch(fetch: typeof globalThis.fetch): void {
  */
 export function getTracedFetch(): typeof globalThis.fetch | undefined {
   return tracedFetch;
+}
+
+/** Configure the shared HTTP pool used by subsequently-created servers. */
+export function setConnectionPool(pool: ConnectionPool | undefined): void {
+  connectionPool = pool;
+}
+
+/** Return the currently configured HTTP pool, if one is active. */
+export function getConnectionPool(): ConnectionPool | undefined {
+  return connectionPool;
 }
 
 /**
@@ -83,13 +95,20 @@ export function createHorizonServer(
   horizonUrl: string,
   options?: ServerOptions,
 ): Horizon.Server {
+  const pooledFetch = connectionPool?.fetch;
   if (options?.signal) {
     return new Horizon.Server(horizonUrl, {
-      fetch: signalAwareFetch(options.signal),
+      fetch: pooledFetch
+        ? (input: RequestInfo | URL, init?: RequestInit) =>
+            pooledFetch(input, {
+              ...init,
+              signal: composeSignals(init?.signal, options.signal!),
+            })
+        : signalAwareFetch(options.signal),
     } as any);
   }
-  return tracedFetch
-    ? new Horizon.Server(horizonUrl, { fetch: tracedFetch } as any)
+  return pooledFetch || tracedFetch
+    ? new Horizon.Server(horizonUrl, { fetch: pooledFetch ?? tracedFetch } as any)
     : new Horizon.Server(horizonUrl);
 }
 
@@ -105,12 +124,19 @@ export function createSorobanServer(
   if (activeSimulator && rpcUrl === activeSimulator.rpc) {
     return activeSimulator;
   }
+  const pooledFetch = connectionPool?.fetch;
   if (options?.signal) {
     return new SorobanRpc.Server(rpcUrl, {
-      fetch: signalAwareFetch(options.signal),
+      fetch: pooledFetch
+        ? (input: RequestInfo | URL, init?: RequestInit) =>
+            pooledFetch(input, {
+              ...init,
+              signal: composeSignals(init?.signal, options.signal!),
+            })
+        : signalAwareFetch(options.signal),
     } as any);
   }
-  return tracedFetch
-    ? new SorobanRpc.Server(rpcUrl, { fetch: tracedFetch } as any)
+  return pooledFetch || tracedFetch
+    ? new SorobanRpc.Server(rpcUrl, { fetch: pooledFetch ?? tracedFetch } as any)
     : new SorobanRpc.Server(rpcUrl);
 }

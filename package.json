@@ -15,6 +15,16 @@
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.mjs",
       "require": "./dist/testing/index.js"
+    },
+    "./wallet": {
+      "types": "./dist/wallet/index.d.ts",
+      "import": "./dist/wallet/index.mjs",
+      "require": "./dist/wallet/index.js"
+    },
+    "./account": {
+      "types": "./dist/account/index.d.ts",
+      "import": "./dist/account/index.mjs",
+      "require": "./dist/account/index.js"
     }
   },
   "files": [
@@ -30,7 +40,8 @@
     "bench": "vitest bench",
     "lint": "eslint src --ext .ts",
     "clean": "rimraf dist",
-    "validate:exports": "node scripts/validate-exports.js"
+    "validate:exports": "node scripts/validate-exports.js",
+    "size:check": "node scripts/check-bundle-size.mjs"
   },
   "keywords": [
     "stellar",
@@ -43,6 +54,7 @@
   "author": "Sorokit",
   "license": "MIT",
   "peerDependencies": {
+    "@stellar/stellar-sdk": ">=13.3.0",
     "@creit.tech/stellar-wallets-kit": ">=1.0.0",
     "vitest": ">=1.0.0"
   },

@@ -306,3 +306,50 @@ export function exportPerformanceMetrics(): string {
 export function resetPerformanceMetrics(): void {
   metricsCollector.clear();
 }
+
+/** A monotonic event counter suitable for cache hits, retries, and errors. */
+export class Counter {
+  private countValue = 0;
+
+  constructor(public readonly name: string, initialValue = 0) {
+    this.countValue = Number.isFinite(initialValue) ? Math.max(0, initialValue) : 0;
+  }
+
+  increment(amount = 1): number {
+    if (!Number.isFinite(amount)) return this.countValue;
+    this.countValue += amount;
+    return this.countValue;
+  }
+
+  get value(): number {
+    return this.countValue;
+  }
+
+  reset(): void {
+    this.countValue = 0;
+  }
+}
+
+/** Timer for measuring one operation; stop() records its duration globally. */
+export class Timer {
+  private readonly startedAt = performance.now();
+  private stopped = false;
+
+  constructor(public readonly operation: string) {}
+
+  stop(success = true): number {
+    if (this.stopped) return 0;
+    this.stopped = true;
+    const durationMs = performance.now() - this.startedAt;
+    recordMetric(this.operation, durationMs, success);
+    return durationMs;
+  }
+}
+
+export function createCounter(name: string, initialValue?: number): Counter {
+  return new Counter(name, initialValue);
+}
+
+export function startTimer(operation: string): Timer {
+  return new Timer(operation);
+}

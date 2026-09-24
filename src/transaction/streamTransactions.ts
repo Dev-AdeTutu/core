@@ -4,6 +4,7 @@ import type { SorokitResult } from "../shared/response";
 import { sleep, toMessage, isNotFoundError } from "../shared";
 import type { SorokitLogger } from "../shared/logger";
 import type { TransactionResult, TransactionStatus } from "./types";
+export type { TransactionResult } from "./types";
 import { createHorizonServer, createSorobanServer } from "../shared/serverFactory";
 import {
   retryStreamingPoll,
@@ -11,6 +12,7 @@ import {
   type StreamingRetryConfig,
 } from "../shared/utils";
 import { isTransientError } from "../shared/errors";
+import { streamTransactionsSSE } from "./streamTransactionsSSE";
 
 const MIN_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -40,6 +42,8 @@ function getLatencyCompensatedDelay(intervalMs: number, requestDurationMs: numbe
  * Configuration for transaction streaming.
  */
 export interface TransactionStreamConfig {
+  /** Transport selection. Polling remains the default for backward compatibility. */
+  transport?: "polling" | "sse" | "auto";
   /**
    * Polling interval in milliseconds. Default: 5000 (5 seconds).
    * Minimum enforced: 1000 ms.
@@ -230,6 +234,20 @@ export async function* streamTransactions(
   signal?: AbortSignal,
   logger?: SorokitLogger,
 ): AsyncGenerator<SorokitResult<TransactionPage>> {
+  if (config?.transport === "sse" || config?.transport === "auto") {
+    yield* streamTransactionsSSE(horizonUrl, publicKey, config, {
+      signal,
+      logger,
+      fallback: streamTransactions(
+        horizonUrl,
+        publicKey,
+        { ...config, transport: "polling" },
+        signal,
+        logger,
+      ),
+    });
+    return;
+  }
   const requestedInterval = config?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   if (requestedInterval < MIN_POLL_INTERVAL_MS) {
     const msg = `intervalMs clamped from ${requestedInterval}ms to ${MIN_POLL_INTERVAL_MS}ms`;
